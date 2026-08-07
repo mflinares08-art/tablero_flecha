@@ -1,9 +1,13 @@
+import zoneinfo
 from datetime import datetime, timedelta
 import re
 import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 import streamlit as st
+
+# Zona Horaria de Argentina
+TZ_ARG = zoneinfo.ZoneInfo("America/Argentina/Buenos_Aires")
 
 # ---------------------------------------------------------
 # CONFIGURACIÓN DE PÁGINA
@@ -109,8 +113,8 @@ df_diario = df_diario[
     df_diario["CODIGO"].astype(str).str.strip() != ""
 ].copy()
 
-# Si la columna FECHA no existe en la hoja, asignarle la fecha actual
-fecha_hoy_str = datetime.now().strftime("%Y-%m-%d")
+# Si la columna FECHA no existe en la hoja, asignarle la fecha actual de Argentina
+fecha_hoy_str = datetime.now(TZ_ARG).strftime("%Y-%m-%d")
 if "FECHA" not in df_diario.columns:
     df_diario["FECHA"] = fecha_hoy_str
 else:
@@ -240,11 +244,11 @@ st.markdown("---")
 # ---------------------------------------------------------
 st.sidebar.header("🔍 Filtros")
 
-# Filtro por Fecha
+# Filtro por Fecha (Ajustado a hora Argentina)
 fechas_disponibles = sorted(
     [str(f) for f in df["FECHA"].unique() if str(f).strip()], reverse=True
 )
-fecha_hoy = datetime.now().date()
+fecha_hoy = datetime.now(TZ_ARG).date()
 
 fecha_sel = st.sidebar.date_input("📅 Seleccionar Fecha", value=fecha_hoy)
 fecha_sel_str = str(fecha_sel)
@@ -414,8 +418,8 @@ with btn_col2:
             sh_plantilla = spreadsheet.worksheet("plantilla_partidas")
             df_limpio = df_cierre.copy()
             
-            # Avanzar fecha 1 día y resetear valores de operacion
-            manana_str = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            # Avanzar fecha 1 día según la hora local de Argentina
+            manana_str = (datetime.now(TZ_ARG) + timedelta(days=1)).strftime("%Y-%m-%d")
             df_limpio["FECHA"] = manana_str
             df_limpio["PARTIO"] = ""
             df_limpio["DEMORA"] = 0
