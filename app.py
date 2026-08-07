@@ -133,7 +133,6 @@ if not df_base.empty:
     }
     df_base_clean = df_base.rename(columns=renombres).copy()
 
-    # Extraer horario HH:MM
     if "Fecha salida" in df_base_clean.columns:
         df_base_clean["HORARIO_BASE"] = (
             pd.to_datetime(df_base_clean["Fecha salida"], errors="coerce")
@@ -153,10 +152,8 @@ if not df_base.empty:
         subset=["CODIGO"]
     )
 
-    # Cruce LEFT
     df_procesado = pd.merge(df_diario, df_base_sub, on="CODIGO", how="left")
 
-    # Autocompletar si falta información en la hoja diaria
     for col_orig, col_base in [
         ("CABECERA", "CABECERA_BASE"),
         ("HORARIO", "HORARIO_BASE"),
@@ -184,7 +181,6 @@ if not df_base.empty:
 else:
     df_procesado = df_diario.copy()
 
-# Garantizar columnas requeridas en el orden deseado
 cols_orden = [
     "FECHA",
     "CODIGO",
@@ -244,13 +240,16 @@ st.markdown("---")
 # ---------------------------------------------------------
 st.sidebar.header("🔍 Filtros")
 
-# Filtro por Fecha (Ajustado a hora Argentina)
-fechas_disponibles = sorted(
-    [str(f) for f in df["FECHA"].unique() if str(f).strip()], reverse=True
-)
+# Mantener día seleccionado en el almanaque
 fecha_hoy = datetime.now(TZ_ARG).date()
+if "fecha_seleccionada" not in st.session_state:
+    st.session_state["fecha_seleccionada"] = fecha_hoy
 
-fecha_sel = st.sidebar.date_input("📅 Seleccionar Fecha", value=fecha_hoy)
+fecha_sel = st.sidebar.date_input(
+    "📅 Seleccionar Fecha", 
+    value=st.session_state["fecha_seleccionada"],
+    key="fecha_seleccionada"
+)
 fecha_sel_str = str(fecha_sel)
 
 # Filtro por Empresa
@@ -273,6 +272,47 @@ estados_sel = st.sidebar.multiselect("Estado", estados, default=estados)
 buscar_destino = st.sidebar.text_input(
     "Anuncio / Destino", placeholder="Buscar ciudad..."
 )
+
+# ---------------------------------------------------------
+# ➕ FORMULARIO PARA AGREGAR NUEVO SERVICIO (SECCIÓN 4)
+# ---------------------------------------------------------
+st.sidebar.markdown("---")
+with st.sidebar.expander("➕ Agregar Servicio Manual", expanded=False):
+    with st.form("form_nuevo_servicio", clear_on_submit=True):
+        nuevo_codigo = st.text_input("Código de Servicio*")
+        nuevo_cabecera = st.text_input("Cabecera / Origen")
+        nuevo_horario = st.text_input("Horario Salida (HH:MM)*", placeholder="14:30")
+        nuevo_anuncio = st.text_input("Anuncio / Destino")
+        nuevo_empresa = st.text_input("Empresa")
+        nuevo_interno = st.text_input("Interno")
+        
+        btn_agregar = st.form_submit_button("➕ Añadir a la lista")
+        
+        if btn_agregar:
+            if not nuevo_codigo or not nuevo_horario:
+                st.error("⚠️ El código y el horario son obligatorios.")
+            else:
+                nueva_fila = {
+                    "FECHA": fecha_sel_str,
+                    "CODIGO": str(nuevo_codigo).strip(),
+                    "CABECERA": str(nuevo_cabecera).strip(),
+                    "HORARIO": str(nuevo_horario).strip(),
+                    "ANUNCIO": str(nuevo_anuncio).strip(),
+                    "EMPRESA": str(nuevo_empresa).strip(),
+                    "INTERNO": str(nuevo_interno).strip(),
+                    "PLAT": "",
+                    "PARTIO": "",
+                    "DEMORA": 0,
+                    "ESTADO": "⏳ Pendiente"
+                }
+                
+                df_nueva_fila = pd.DataFrame([nueva_fila])
+                st.session_state["df_trabajo"] = pd.concat(
+                    [st.session_state["df_trabajo"], df_nueva_fila], 
+                    ignore_index=True
+                )
+                st.success(f"✅ ¡Servicio {nuevo_codigo} añadido con éxito!")
+                st.rerun()
 
 # Aplicar Máscara de Filtros
 mask = df["FECHA"].astype(str) == fecha_sel_str
@@ -325,13 +365,13 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TABLA INTERACTIVA
+# TABLA INTERACTIVA CON ALERTAS VISUALES (SECCIÓN 2)
 # ---------------------------------------------------------
 col_sub, col_btn = st.columns([3, 1])
 with col_sub:
     st.subheader(f"📡 Despachos del día: {fecha_sel_str}")
     st.caption(
-        "💡 Puedes modificar registros o agregar nuevos. Usa el calendario de la izquierda para ver días anteriores."
+        "💡 Puedes modificar registros o agregar nuevos. Las demoradas figuran en rojo y las puntuales en verde."
     )
 
 with col_btn:
@@ -343,9 +383,20 @@ with col_btn:
         mime="text/csv",
     )
 
+# Función de resaltado/alertas visuales
+def aplicar_colores(row):
+    estado = row.get("ESTADO", "")
+    if estado == "🔴 Demorado":
+        return ["background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"] * len(row)
+    elif estado == "🟢 En Horario":
+        return ["background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"] * len(row)
+    return [""] * len(row)
+
+df_estilizado = df_filtrado.style.apply(aplicar_colores, axis=1)
+
 # Editor interactivo
 df_editado = st.data_editor(
-    df_filtrado,
+    df_estilizado,
     use_container_width=True,
     height=420,
     num_rows="dynamic",
@@ -414,13 +465,17 @@ with btn_col2:
             if registros_historico:
                 sh_historico.append_rows(registros_historico)
 
-            # 4. Limpiar plantilla_partidas para el día siguiente
+            # 4. Mantener la estructura base de CODIGOS para el día siguiente
             sh_plantilla = spreadsheet.worksheet("plantilla_partidas")
             df_limpio = df_cierre.copy()
             
-            # Avanzar fecha 1 día según la hora local de Argentina
-            manana_str = (datetime.now(TZ_ARG) + timedelta(days=1)).strftime("%Y-%m-%d")
+            # Avanzar fecha 1 día según hora Argentina
+            manana_date = datetime.now(TZ_ARG).date() + timedelta(days=1)
+            manana_str = str(manana_date)
+            
+            # Mantener CÓDIGOS y datos base, reseteando solo operativas
             df_limpio["FECHA"] = manana_str
+            df_limpio["PLAT"] = ""
             df_limpio["PARTIO"] = ""
             df_limpio["DEMORA"] = 0
             df_limpio["ESTADO"] = "⏳ Pendiente"
@@ -429,7 +484,10 @@ with btn_col2:
             sh_plantilla.clear()
             sh_plantilla.update(range_name="A1", values=matriz_limpia)
 
-            st.success("🎉 ¡Cierre de planilla exitoso! Los datos se archivaron en 'historico_partidas' y la plantilla se reseteó para mañana.")
+            # Actualizar la fecha seleccionada a mañana para acompañar la vista
+            st.session_state["fecha_seleccionada"] = manana_date
+
+            st.success("🎉 ¡Cierre de planilla exitoso! Se archivó el historial y se mantuvieron los códigos base para mañana.")
             st.cache_data.clear()
             st.session_state.pop("df_trabajo", None)
             st.rerun()
