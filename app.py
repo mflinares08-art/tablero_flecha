@@ -153,7 +153,7 @@ else:
 if "df_trabajo" not in st.session_state:
     st.session_state["df_trabajo"] = ordenar_por_horario(df_diario.copy())
 
-# Recalcular demoras
+# Recalcular demoras respetando el HORARIO modificado
 if not st.session_state["df_trabajo"].empty:
     st.session_state["df_trabajo"][["DEMORA", "ESTADO"]] = st.session_state[
         "df_trabajo"
@@ -174,11 +174,11 @@ if not df_base.empty:
     df_b_clean = df_base.rename(columns=renombres_base).copy()
 
     if "Fecha salida" in df_b_clean.columns:
-        df_b_clean["HORARIO"] = pd.to_datetime(
+        df_b_clean["HORARIO_BASE"] = pd.to_datetime(
             df_b_clean["Fecha salida"], errors="coerce"
         ).dt.strftime("%H:%M")
 
-    cols_b = ["CODIGO", "CABECERA", "HORARIO", "ANUNCIO", "EMPRESA", "INTERNO"]
+    cols_b = ["CODIGO", "CABECERA", "HORARIO_BASE", "ANUNCIO", "EMPRESA", "INTERNO"]
     cols_b_ex = [c for c in cols_b if c in df_b_clean.columns]
     df_b_sub = df_b_clean[cols_b_ex].drop_duplicates(subset=["CODIGO"])
 
@@ -275,7 +275,7 @@ if col_auto1.button("🔍 Buscar Datos"):
             st.session_state["form_manual"] = {
                 "CODIGO": cod_ingresado.strip(),
                 "CABECERA": str(row_m.get("CABECERA", "")),
-                "HORARIO": str(row_m.get("HORARIO", "")),
+                "HORARIO": str(row_m.get("HORARIO_BASE", "")),
                 "ANUNCIO": str(row_m.get("ANUNCIO", "")),
                 "EMPRESA": str(row_m.get("EMPRESA", "")),
                 "INTERNO": str(row_m.get("INTERNO", "")),
@@ -329,7 +329,6 @@ with st.sidebar.form("form_nuevo_servicio"):
                 "GUARDADO": "NO",
             }
 
-            # Concatenar y Re-ordenar por Horario automáticamente
             df_actualizado = pd.concat(
                 [st.session_state["df_trabajo"], pd.DataFrame([nueva_fila])],
                 ignore_index=True,
@@ -344,7 +343,7 @@ with st.sidebar.form("form_nuevo_servicio"):
                 "EMPRESA": "",
                 "INTERNO": "",
             }
-            st.success(f"✅ ¡Servicio {cod_ingresado} añadido y ordenado con éxito!")
+            st.success(f"✅ ¡Servicio {cod_ingresado} añadido con éxito!")
             st.rerun()
 
 # ---------------------------------------------------------
@@ -367,7 +366,6 @@ if buscar_destino and not df.empty:
         df["ANUNCIO"].str.contains(buscar_destino, case=False, na=False)
     )
 
-# Filtrar y asegurar orden cronológico en la vista
 df_filtrado = (
     ordenar_por_horario(df[mask].copy())
     if not df.empty
@@ -410,20 +408,23 @@ if df_filtrado.empty:
                 df_c_base["COMENTARIOS"] = ""
                 df_c_base["GUARDADO"] = "NO"
 
-                # Cruzar con Base_Servicios
+                # Cruzar con Base_Servicios tomando HORARIO_BASE solo como default
                 if not df_b_sub.empty:
                     df_nueva_prog = pd.merge(
                         df_c_base, df_b_sub, on="CODIGO", how="left"
                     )
+                    if "HORARIO_BASE" in df_nueva_prog.columns:
+                        df_nueva_prog["HORARIO"] = df_nueva_prog["HORARIO_BASE"]
+                        df_nueva_prog = df_nueva_prog.drop(columns=["HORARIO_BASE"])
                 else:
                     df_nueva_prog = df_c_base
+                    df_nueva_prog["HORARIO"] = ""
 
                 for c in cols_orden:
                     if c not in df_nueva_prog.columns:
                         df_nueva_prog[c] = ""
                 df_nueva_prog = df_nueva_prog[cols_orden].fillna("")
 
-                # Concatenar y reordenar por horario
                 df_mezclado = pd.concat(
                     [st.session_state["df_trabajo"], df_nueva_prog],
                     ignore_index=True,
@@ -431,7 +432,7 @@ if df_filtrado.empty:
                 st.session_state["df_trabajo"] = ordenar_por_horario(df_mezclado)
 
                 st.success(
-                    f"🎉 ¡Día {fecha_sel_str} cargado y ordenado cronológicamente!"
+                    f"🎉 ¡Día {fecha_sel_str} cargado! Podés ajustar los horarios para Retiro cuando quieras."
                 )
                 st.rerun()
 
@@ -470,13 +471,13 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TABLA INTERACTIVA CON BLOQUEO Y COMENTARIOS
+# TABLA INTERACTIVA CON PERMISO DE EDICIÓN DE HORARIOS
 # ---------------------------------------------------------
 col_sub, col_btn = st.columns([3, 1])
 with col_sub:
     st.subheader(f"📡 Despachos del día: {fecha_sel_str}")
     st.caption(
-        "💡 Los servicios están ordenados por HORARIO de salida. Los guardados figuran con 'GUARDADO = SI'."
+        "💡 Podés editar los HORARIOS para adaptarlos a Retiro. Al cambiar la hora se reordenará solo."
     )
 
 with col_btn:
@@ -531,32 +532,37 @@ if not df_filtrado.empty:
         disabled=cols_disabled,
         column_config={
             "FECHA": st.column_config.TextColumn("FECHA"),
-            "HORARIO": st.column_config.TextColumn("HORARIO"),
+            "HORARIO": st.column_config.TextColumn("HORARIO (RET)"),
             "DEMORA": st.column_config.NumberColumn(
                 "DEMORA (min)", format="%d min"
             ),
             "ESTADO": st.column_config.TextColumn("ESTADO"),
-            "COMENTARIOS": st.column_config.TextColumn(
-                "COMENTARIOS", help="Escribí aquí observaciones o notas"
-            ),
-            "GUARDADO": st.column_config.TextColumn(
-                "GUARDADO", help="SI indica registro histórico congelado"
-            ),
+            "COMENTARIOS": st.column_config.TextColumn("COMENTARIOS"),
+            "GUARDADO": st.column_config.TextColumn("GUARDADO"),
         },
         key="editor_tabla",
     )
 
-    # Sincronización en tiempo real
+    # Sincronización precisa en tiempo real
     if st.session_state.get("editor_tabla"):
+        hubo_cambio_horario = False
         for idx, cambios in st.session_state["editor_tabla"][
             "edited_rows"
         ].items():
             indice_real = df_filtrado.index[idx]
             for campo, val in cambios.items():
                 st.session_state["df_trabajo"].at[indice_real, campo] = str(val)
+                if campo == "HORARIO":
+                    hubo_cambio_horario = True
+
+        if hubo_cambio_horario:
+            st.session_state["df_trabajo"] = ordenar_por_horario(
+                st.session_state["df_trabajo"]
+            )
+            st.rerun()
 
 # ---------------------------------------------------------
-# BOTÓN DE GUARDAR Y CONGELAR DÍA
+# BOTÓN DE GUARDAR CAMBIOS
 # ---------------------------------------------------------
 st.markdown("---")
 if st.button(
@@ -573,7 +579,7 @@ if st.button(
         )
         st.session_state["df_trabajo"].loc[mask_guardar, "GUARDADO"] = "SI"
 
-        # Asegurar orden antes de subir a Google Sheets
+        # Garantizar orden antes de enviar
         st.session_state["df_trabajo"] = ordenar_por_horario(
             st.session_state["df_trabajo"]
         )
@@ -587,7 +593,7 @@ if st.button(
         sh.update(range_name="A1", values=matriz_datos)
 
         st.success(
-            f"✅ ¡Despachos del {fecha_sel_str} guardados y ordenados por horario!"
+            f"✅ ¡Cambios del {fecha_sel_str} (incluyendo horarios modificados para Retiro) guardados con éxito!"
         )
         st.cache_data.clear()
         st.rerun()
