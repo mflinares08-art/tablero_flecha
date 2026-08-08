@@ -470,7 +470,7 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TABLA INTERACTIVA CON INDICADOR DE CABECERA Y RESALTADO DE FILA
+# TABLA INTERACTIVA CON EMOJI FORZADO EN LA VISTA
 # ---------------------------------------------------------
 col_sub, col_btn = st.columns([3, 1])
 with col_sub:
@@ -490,16 +490,13 @@ with col_btn:
 
 
 def aplicar_colores(row):
-    estado = row.get("ESTADO", "")
+    estado = str(row.get("ESTADO", ""))
     cabecera = str(row.get("CABECERA", "")).replace("🟡", "").strip().upper()
 
-    # Si está Demorado -> Fila Roja
     if estado == "🔴 Demorado":
         return ["background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"] * len(row)
-    # Si NO es RET -> Fila Ámbar/Naranja de alerta
     elif cabecera != "RET" and cabecera != "":
-        return ["background-color: rgba(245, 158, 11, 0.25); color: #fde047;"] * len(row)
-    # Si está En Horario -> Fila Verde
+        return ["background-color: rgba(245, 158, 11, 0.22); color: #fde047;"] * len(row)
     elif estado == "🟢 En Horario":
         return ["background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"] * len(row)
     
@@ -509,16 +506,16 @@ def aplicar_colores(row):
 if not df_filtrado.empty:
     cols_disabled = ["DEMORA", "ESTADO"]
 
-    # Agregar el indicador 🟡 visual a la columna CABECERA si no es RET
+    # FORZAMOS LA TRANSFORMACIÓN VISUAL DE CABECERA DIRECTO EN EL DATAFRAME DE VISTA
     df_vista = df_filtrado.copy()
     
-    def formatear_cabecera(val):
-        clean_val = str(val).replace("🟡", "").strip()
-        if clean_val.upper() != "RET" and clean_val != "":
-            return f"🟡 {clean_val}"
-        return clean_val
+    def agregar_emoji_cabecera(val):
+        str_val = str(val).replace("🟡", "").strip()
+        if str_val.upper() != "RET" and str_val != "":
+            return f"🟡 {str_val}"
+        return str_val
 
-    df_vista["CABECERA"] = df_vista["CABECERA"].apply(formatear_cabecera)
+    df_vista["CABECERA"] = df_vista["CABECERA"].apply(agregar_emoji_cabecera)
 
     es_guardado_dia = (
         df_filtrado["GUARDADO"].astype(str).str.upper().eq("SI").all()
@@ -558,7 +555,7 @@ if not df_filtrado.empty:
         key="editor_tabla",
     )
 
-    # Sincronización limpia en tiempo real (limpiando el emoji 🟡 al guardar)
+    # Sincronización precisa y limpieza del emoji en el state
     if st.session_state.get("editor_tabla"):
         hubo_cambio_horario = False
         for idx, cambios in st.session_state["editor_tabla"][
@@ -600,8 +597,6 @@ if st.button(
         )
 
         df_a_enviar = st.session_state["df_trabajo"].copy().fillna("")
-        
-        # Limpiar cualquier emoji residual antes de enviar a Google Sheets
         df_a_enviar["CABECERA"] = df_a_enviar["CABECERA"].astype(str).str.replace("🟡", "").str.strip()
 
         matriz_datos = [
