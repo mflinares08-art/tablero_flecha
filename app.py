@@ -1,5 +1,5 @@
 import zoneinfo
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 import gspread
 from google.oauth2.service_account import Credentials
@@ -26,9 +26,26 @@ SCOPES = [
 
 ID_SHEET = "1b-FnwWgy9bvdM83FQ2E_A7xp8bl9-OLkMT8VZVSIuuo"
 
+# Orden de columnas definitivo
+cols_orden = [
+    "FECHA",
+    "CODIGO",
+    "CABECERA",
+    "HORARIO",
+    "ANUNCIO",
+    "EMPRESA",
+    "INTERNO",
+    "PLAT",
+    "PARTIO",
+    "DEMORA",
+    "ESTADO",
+    "COMENTARIOS",
+    "GUARDADO",  # Marca interna para congelar edición
+]
+
 
 # ---------------------------------------------------------
-# FUNCIONES DE CONEXIÓN Y PROCESAMIENTO
+# CONEXIÓN Y CARGA DE GOOGLE SHEETS
 # ---------------------------------------------------------
 def obtener_cliente_gspread():
     if "gcp_service_account" not in st.secrets:
@@ -47,21 +64,24 @@ def obtener_cliente_gspread():
 
 
 @st.cache_data(ttl=15)
-def cargar_pestana(nombre_o_index="plantilla_partidas"):
-    gc = obtener_cliente_gspread()
-    spreadsheet = gc.open_by_key(ID_SHEET)
+def cargar_pestana(nombre_o_index):
+    try:
+        gc = obtener_cliente_gspread()
+        spreadsheet = gc.open_by_key(ID_SHEET)
 
-    if isinstance(nombre_o_index, int):
-        sheet = spreadsheet.get_worksheet(nombre_o_index)
-    else:
-        sheet = spreadsheet.worksheet(nombre_o_index)
+        if isinstance(nombre_o_index, int):
+            sheet = spreadsheet.get_worksheet(nombre_o_index)
+        else:
+            sheet = spreadsheet.worksheet(nombre_o_index)
 
-    data = sheet.get_all_values()
-    if not data or len(data) < 2:
+        data = sheet.get_all_values()
+        if not data or len(data) < 2:
+            return pd.DataFrame()
+
+        headers = [str(h).strip() for h in data[0]]
+        return pd.DataFrame(data[1:], columns=headers)
+    except Exception:
         return pd.DataFrame()
-
-    headers = [str(h).strip() for h in data[0]]
-    return pd.DataFrame(data[1:], columns=headers)
 
 
 def parsear_hora(texto_hora):
@@ -94,30 +114,17 @@ def calcular_demora_y_estado(row):
 
 
 # ---------------------------------------------------------
-# CARGA DE DATOS DE GOOGLE SHEETS
+# CARGA Y PREPARACIÓN DE DATOS
 # ---------------------------------------------------------
 try:
-    df_diario = cargar_pestana("plantilla_partidas")  # Pestaña acumulativa/plantilla
-    df_base = cargar_pestana("Base_Servicios")  # Base maestra copiada de la API
+    df_diario = cargar_pestana("plantilla_partidas")  # Pestaña acumulativa
+    df_base = cargar_pestana("Base_Servicios")  # API / Base Maestra
+    df_codigos_sheet = cargar_pestana("codigos")  # Nueva Pestaña con Lista Fija
 except Exception as e:
     st.error(f"❌ Error al conectar con Google Sheets: {e}")
     st.stop()
 
-# Garantizar columnas requeridas en el orden deseado
-cols_orden = [
-    "FECHA",
-    "CODIGO",
-    "CABECERA",
-    "HORARIO",
-    "ANUNCIO",
-    "EMPRESA",
-    "INTERNO",
-    "PLAT",
-    "PARTIO",
-    "DEMORA",
-    "ESTADO",
-]
-
+# Garantizar columnas
 if not df_diario.empty:
     df_diario.columns = df_diario.columns.str.upper()
     for col in cols_orden:
@@ -127,20 +134,41 @@ if not df_diario.empty:
 else:
     df_diario = pd.DataFrame(columns=cols_orden)
 
-# ---------------------------------------------------------
-# MEMORIA Y RECÁLCULO
-# ---------------------------------------------------------
+# Estado de la Sesión
 if "df_trabajo" not in st.session_state:
     st.session_state["df_trabajo"] = df_diario.copy()
 
-st.session_state["df_trabajo"][["DEMORA", "ESTADO"]] = st.session_state[
-    "df_trabajo"
-].apply(calcular_demora_y_estado, axis=1)
+# Recalcular demoras
+if not st.session_state["df_trabajo"].empty:
+    st.session_state["df_trabajo"][["DEMORA", "ESTADO"]] = st.session_state[
+        "df_trabajo"
+    ].apply(calcular_demora_y_estado, axis=1)
 
 df = st.session_state["df_trabajo"]
 
+# Normalización de Base_Servicios para búsquedas rápidas
+df_b_sub = pd.DataFrame()
+if not df_base.empty:
+    renombres_base = {
+        "Código": "CODIGO",
+        "Origen": "CABECERA",
+        "Se anuncia a": "ANUNCIO",
+        "Código de transportista": "EMPRESA",
+        "Interno": "INTERNO",
+    }
+    df_b_clean = df_base.rename(columns=renombres_base).copy()
+
+    if "Fecha salida" in df_b_clean.columns:
+        df_b_clean["HORARIO"] = pd.to_datetime(
+            df_b_clean["Fecha salida"], errors="coerce"
+        ).dt.strftime("%H:%M")
+
+    cols_b = ["CODIGO", "CABECERA", "HORARIO", "ANUNCIO", "EMPRESA", "INTERNO"]
+    cols_b_ex = [c for c in cols_b if c in df_b_clean.columns]
+    df_b_sub = df_b_clean[cols_b_ex].drop_duplicates(subset=["CODIGO"])
+
 # ---------------------------------------------------------
-# ESTILOS E INTERFAZ
+# INTERFAZ & ESTILOS
 # ---------------------------------------------------------
 st.markdown(
     """
@@ -165,21 +193,19 @@ st.markdown("---")
 # ---------------------------------------------------------
 # FILTROS LATERALES
 # ---------------------------------------------------------
-st.sidebar.header("🔍 Filtros")
+st.sidebar.header("🔍 Filtros & Opciones")
 
-# Mantener día seleccionado en el almanaque
 fecha_hoy = datetime.now(TZ_ARG).date()
 if "fecha_seleccionada" not in st.session_state:
     st.session_state["fecha_seleccionada"] = fecha_hoy
 
 fecha_sel = st.sidebar.date_input(
-    "📅 Seleccionar Fecha", 
+    "📅 Seleccionar Fecha",
     value=st.session_state["fecha_seleccionada"],
-    key="fecha_seleccionada"
+    key="fecha_seleccionada",
 )
 fecha_sel_str = str(fecha_sel)
 
-# Filtro por Empresa
 empresas = ["Todas las empresas"] + sorted(
     list(
         set(
@@ -191,58 +217,126 @@ empresas = ["Todas las empresas"] + sorted(
 )
 empresa_sel = st.sidebar.selectbox("Empresa", empresas)
 
-# Filtro por Estado
 estados = list(df["ESTADO"].unique()) if not df.empty else []
 estados_sel = st.sidebar.multiselect("Estado", estados, default=estados)
 
-# Búsqueda por texto
 buscar_destino = st.sidebar.text_input(
     "Anuncio / Destino", placeholder="Buscar ciudad..."
 )
 
 # ---------------------------------------------------------
-# FORMULARIO PARA AGREGAR NUEVO SERVICIO INDIVIDUAL
+# FORMULARIO CON AUTOCOMPLETADO
 # ---------------------------------------------------------
 st.sidebar.markdown("---")
-with st.sidebar.expander("➕ Agregar Servicio Manual", expanded=False):
-    with st.form("form_nuevo_servicio", clear_on_submit=True):
-        nuevo_codigo = st.text_input("Código de Servicio*")
-        nuevo_cabecera = st.text_input("Cabecera / Origen")
-        nuevo_horario = st.text_input("Horario Salida (HH:MM)*", placeholder="14:30")
-        nuevo_anuncio = st.text_input("Anuncio / Destino")
-        nuevo_empresa = st.text_input("Empresa")
-        nuevo_interno = st.text_input("Interno")
-        
-        btn_agregar = st.form_submit_button("➕ Añadir a la lista")
-        
-        if btn_agregar:
-            if not nuevo_codigo or not nuevo_horario:
-                st.error("⚠️ El código y el horario son obligatorios.")
-            else:
-                nueva_fila = {
-                    "FECHA": fecha_sel_str,
-                    "CODIGO": str(nuevo_codigo).strip(),
-                    "CABECERA": str(nuevo_cabecera).strip(),
-                    "HORARIO": str(nuevo_horario).strip(),
-                    "ANUNCIO": str(nuevo_anuncio).strip(),
-                    "EMPRESA": str(nuevo_empresa).strip(),
-                    "INTERNO": str(nuevo_interno).strip(),
-                    "PLAT": "",
-                    "PARTIO": "",
-                    "DEMORA": 0,
-                    "ESTADO": "⏳ Pendiente"
-                }
-                
-                df_nueva_fila = pd.DataFrame([nueva_fila])
-                st.session_state["df_trabajo"] = pd.concat(
-                    [st.session_state["df_trabajo"], df_nueva_fila], 
-                    ignore_index=True
-                )
-                st.success(f"✅ ¡Servicio {nuevo_codigo} añadido con éxito!")
-                st.rerun()
+st.sidebar.subheader("➕ Agregar Servicio Manual")
 
-# Aplicar Máscara de Filtros
-mask = df["FECHA"].astype(str) == fecha_sel_str if not df.empty else pd.Series(dtype=bool)
+# Buffer de estado del formulario
+if "form_manual" not in st.session_state:
+    st.session_state["form_manual"] = {
+        "CODIGO": "",
+        "CABECERA": "",
+        "HORARIO": "",
+        "ANUNCIO": "",
+        "EMPRESA": "",
+        "INTERNO": "",
+    }
+
+cod_ingresado = st.sidebar.text_input(
+    "Código de Servicio",
+    value=st.session_state["form_manual"]["CODIGO"],
+    key="input_cod_manual",
+)
+
+col_auto1, col_auto2 = st.sidebar.columns([1, 1])
+if col_auto1.button("🔍 Buscar Datos"):
+    if not cod_ingresado.strip():
+        st.sidebar.warning("Ingresá un código para buscar.")
+    elif not df_b_sub.empty:
+        match = df_b_sub[
+            df_b_sub["CODIGO"].astype(str).str.strip()
+            == cod_ingresado.strip()
+        ]
+        if not match.empty:
+            row_m = match.iloc[0]
+            st.session_state["form_manual"] = {
+                "CODIGO": cod_ingresado.strip(),
+                "CABECERA": str(row_m.get("CABECERA", "")),
+                "HORARIO": str(row_m.get("HORARIO", "")),
+                "ANUNCIO": str(row_m.get("ANUNCIO", "")),
+                "EMPRESA": str(row_m.get("EMPRESA", "")),
+                "INTERNO": str(row_m.get("INTERNO", "")),
+            }
+            st.sidebar.success("¡Datos encontrados y cargados!")
+            st.rerun()
+        else:
+            st.sidebar.error("Código no encontrado en Base_Servicios.")
+    else:
+        st.sidebar.error("Base_Servicios está vacía.")
+
+with st.sidebar.form("form_nuevo_servicio"):
+    f_cabecera = st.text_input(
+        "Cabecera", value=st.session_state["form_manual"]["CABECERA"]
+    )
+    f_horario = st.text_input(
+        "Horario Salida (HH:MM)*",
+        value=st.session_state["form_manual"]["HORARIO"],
+        placeholder="14:30",
+    )
+    f_anuncio = st.text_input(
+        "Anuncio / Destino",
+        value=st.session_state["form_manual"]["ANUNCIO"],
+    )
+    f_empresa = st.text_input(
+        "Empresa", value=st.session_state["form_manual"]["EMPRESA"]
+    )
+    f_interno = st.text_input(
+        "Interno", value=st.session_state["form_manual"]["INTERNO"]
+    )
+
+    btn_agregar = st.form_submit_button("➕ Añadir al día actual")
+
+    if btn_agregar:
+        if not cod_ingresado or not f_horario:
+            st.error("⚠️ Código y Horario son requeridos.")
+        else:
+            nueva_fila = {
+                "FECHA": fecha_sel_str,
+                "CODIGO": str(cod_ingresado).strip(),
+                "CABECERA": str(f_cabecera).strip(),
+                "HORARIO": str(f_horario).strip(),
+                "ANUNCIO": str(f_anuncio).strip(),
+                "EMPRESA": str(f_empresa).strip(),
+                "INTERNO": str(f_interno).strip(),
+                "PLAT": "",
+                "PARTIO": "",
+                "DEMORA": 0,
+                "ESTADO": "⏳ Pendiente",
+                "COMENTARIOS": "",
+                "GUARDADO": "NO",
+            }
+            st.session_state["df_trabajo"] = pd.concat(
+                [st.session_state["df_trabajo"], pd.DataFrame([nueva_fila])],
+                ignore_index=True,
+            )
+            st.session_state["form_manual"] = {
+                "CODIGO": "",
+                "CABECERA": "",
+                "HORARIO": "",
+                "ANUNCIO": "",
+                "EMPRESA": "",
+                "INTERNO": "",
+            }
+            st.success(f"✅ ¡Servicio {cod_ingresado} añadido con éxito!")
+            st.rerun()
+
+# ---------------------------------------------------------
+# FILTRADO Y PROGRAMACIÓN AUTOMÁTICA DEL DÍA
+# ---------------------------------------------------------
+mask = (
+    df["FECHA"].astype(str) == fecha_sel_str
+    if not df.empty
+    else pd.Series(dtype=bool)
+)
 
 if empresa_sel != "Todas las empresas" and not df.empty:
     mask = mask & (df["EMPRESA"] == empresa_sel)
@@ -255,80 +349,66 @@ if buscar_destino and not df.empty:
         df["ANUNCIO"].str.contains(buscar_destino, case=False, na=False)
     )
 
-df_filtrado = df[mask] if not df.empty else pd.DataFrame(columns=cols_orden)
+df_filtrado = (
+    df[mask].copy() if not df.empty else pd.DataFrame(columns=cols_orden)
+)
 
-# ---------------------------------------------------------
-# GENERACIÓN DE DÍA BASADO EN CÓDIGOS DE PLANTILLA + VLOOKUP BASE_SERVICIOS
-# ---------------------------------------------------------
+# Carga Automática inicial desde la pestaña "codigos"
 if df_filtrado.empty:
-    st.info(f"📅 No hay servicios asignados para la fecha **{fecha_sel_str}**.")
+    st.info(
+        f"📅 No hay servicios inicializados para la fecha **{fecha_sel_str}**."
+    )
     col_cargar, _ = st.columns([2, 1])
     with col_cargar:
-        if st.button(f"📥 Cargar CÓDIGOS del {fecha_sel_str} (y cruzar con API / Base Servicios)", type="primary", use_container_width=True):
-            if df_diario.empty:
-                st.error("❌ No se encontraron códigos en la pestaña 'plantilla_partidas'.")
+        if st.button(
+            f"📥 Programar día {fecha_sel_str} desde pestaña 'codigos'",
+            type="primary",
+            use_container_width=True,
+        ):
+            if df_codigos_sheet.empty:
+                st.error(
+                    "❌ La pestaña 'codigos' está vacía o no existe en Google Sheets."
+                )
             else:
-                # 1. Obtener la lista única de CODIGO de plantilla_partidas
-                df_codigos_base = df_diario[["CODIGO"]].drop_duplicates().copy()
-                df_codigos_base = df_codigos_base[df_codigos_base["CODIGO"].astype(str).str.strip() != ""]
+                col_cod = [
+                    c for c in df_codigos_sheet.columns if "CODIGO" in c.upper()
+                ]
+                nombre_col_cod = col_cod[0] if col_cod else df_codigos_sheet.columns[0]
 
-                # 2. Asignarle la fecha del almanaque y columnas vacías
-                df_codigos_base["FECHA"] = fecha_sel_str
-                df_codigos_base["PLAT"] = ""
-                df_codigos_base["PARTIO"] = ""
-                df_codigos_base["DEMORA"] = 0
-                df_codigos_base["ESTADO"] = "⏳ Pendiente"
+                df_c_base = df_codigos_sheet[[nombre_col_cod]].copy()
+                df_c_base.columns = ["CODIGO"]
+                df_c_base = df_c_base[
+                    df_c_base["CODIGO"].astype(str).str.strip() != ""
+                ].drop_duplicates()
 
-                # 3. Cruzar con Base_Servicios (que actualizás con la API) si tiene datos
-                if not df_base.empty:
-                    renombres_base = {
-                        "Código": "CODIGO",
-                        "Origen": "CABECERA_BASE",
-                        "Se anuncia a": "ANUNCIO_BASE",
-                        "Código de transportista": "EMPRESA_BASE",
-                        "Interno": "INTERNO_BASE",
-                    }
-                    df_b_clean = df_base.rename(columns=renombres_base).copy()
+                df_c_base["FECHA"] = fecha_sel_str
+                df_c_base["PLAT"] = ""
+                df_c_base["PARTIO"] = ""
+                df_c_base["DEMORA"] = 0
+                df_c_base["ESTADO"] = "⏳ Pendiente"
+                df_c_base["COMENTARIOS"] = ""
+                df_c_base["GUARDADO"] = "NO"
 
-                    if "Fecha salida" in df_b_clean.columns:
-                        df_b_clean["HORARIO_BASE"] = (
-                            pd.to_datetime(df_b_clean["Fecha salida"], errors="coerce")
-                            .dt.strftime("%H:%M")
-                        )
-
-                    cols_b = ["CODIGO", "CABECERA_BASE", "HORARIO_BASE", "ANUNCIO_BASE", "EMPRESA_BASE", "INTERNO_BASE"]
-                    cols_b_ex = [c for c in cols_b if c in df_b_clean.columns]
-                    df_b_sub = df_b_clean[cols_b_ex].drop_duplicates(subset=["CODIGO"])
-
-                    # Hacemos el Merge (VLOOKUP)
-                    df_m = pd.merge(df_codigos_base, df_b_sub, on="CODIGO", how="left")
-
-                    df_m["CABECERA"] = df_m.get("CABECERA_BASE", "")
-                    df_m["HORARIO"] = df_m.get("HORARIO_BASE", "")
-                    df_m["ANUNCIO"] = df_m.get("ANUNCIO_BASE", "")
-                    df_m["EMPRESA"] = df_m.get("EMPRESA_BASE", "")
-                    df_m["INTERNO"] = df_m.get("INTERNO_BASE", "")
-
-                    cols_drop = [c for c in ["CABECERA_BASE", "HORARIO_BASE", "ANUNCIO_BASE", "EMPRESA_BASE", "INTERNO_BASE"] if c in df_m.columns]
-                    df_m = df_m.drop(columns=cols_drop)
-                    df_nueva_prog = df_m
+                # Cruzar con Base_Servicios actual de la API
+                if not df_b_sub.empty:
+                    df_nueva_prog = pd.merge(
+                        df_c_base, df_b_sub, on="CODIGO", how="left"
+                    )
                 else:
-                    for c in ["CABECERA", "HORARIO", "ANUNCIO", "EMPRESA", "INTERNO"]:
-                        df_codigos_base[c] = ""
-                    df_nueva_prog = df_codigos_base
+                    df_nueva_prog = df_c_base
 
-                # Asegurar orden de columnas
                 for c in cols_orden:
                     if c not in df_nueva_prog.columns:
                         df_nueva_prog[c] = ""
-                df_nueva_prog = df_nueva_prog[cols_orden]
+                df_nueva_prog = df_nueva_prog[cols_orden].fillna("")
 
-                # Anexar a la tabla de trabajo
                 st.session_state["df_trabajo"] = pd.concat(
-                    [st.session_state["df_trabajo"], df_nueva_prog], 
-                    ignore_index=True
+                    [st.session_state["df_trabajo"], df_nueva_prog],
+                    ignore_index=True,
                 )
-                st.success(f"🎉 Se cargaron los códigos de la plantilla para el {fecha_sel_str} con sus datos actualizados de la API.")
+                st.success(
+                    f"🎉 ¡Día {fecha_sel_str} cargado con los códigos predeterminados y sus datos actuales de la API!"
+                )
                 st.rerun()
 
 # ---------------------------------------------------------
@@ -366,13 +446,13 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TABLA INTERACTIVA CON ALERTAS VISUALES
+# TABLA INTERACTIVA CON BLOQUEO Y COMENTARIOS
 # ---------------------------------------------------------
 col_sub, col_btn = st.columns([3, 1])
 with col_sub:
     st.subheader(f"📡 Despachos del día: {fecha_sel_str}")
     st.caption(
-        "💡 Puedes modificar registros. Las demoradas figuran en rojo y las puntuales en verde."
+        "💡 Los registros guardados con 'GUARDADO = SI' tienen sus datos congelados."
     )
 
 with col_btn:
@@ -384,16 +464,42 @@ with col_btn:
         mime="text/csv",
     )
 
-# Función de resaltado/alertas visuales
+
 def aplicar_colores(row):
     estado = row.get("ESTADO", "")
     if estado == "🔴 Demorado":
-        return ["background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"] * len(row)
+        return [
+            "background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"
+        ] * len(row)
     elif estado == "🟢 En Horario":
-        return ["background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"] * len(row)
+        return [
+            "background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"
+        ] * len(row)
     return [""] * len(row)
 
+
 if not df_filtrado.empty:
+    # Determinar qué columnas se deshabilitan
+    # Si la fila ya fue GUARDADA ("SI"), se deshabilitan las columnas base para que no se alteren
+    cols_disabled = ["DEMORA", "ESTADO"]
+
+    # Evaluamos si todas o algunas filas están guardadas para proteger campos base
+    es_guardado_dia = (
+        df_filtrado["GUARDADO"].astype(str).str.upper().eq("SI").all()
+    )
+    if es_guardado_dia:
+        cols_disabled.extend(
+            [
+                "FECHA",
+                "CODIGO",
+                "CABECERA",
+                "HORARIO",
+                "ANUNCIO",
+                "EMPRESA",
+                "GUARDADO",
+            ]
+        )
+
     df_estilizado = df_filtrado.style.apply(aplicar_colores, axis=1)
 
     df_editado = st.data_editor(
@@ -401,18 +507,24 @@ if not df_filtrado.empty:
         use_container_width=True,
         height=420,
         num_rows="dynamic",
-        disabled=["DEMORA", "ESTADO"],
+        disabled=cols_disabled,
         column_config={
             "FECHA": st.column_config.TextColumn("FECHA"),
             "DEMORA": st.column_config.NumberColumn(
                 "DEMORA (min)", format="%d min"
             ),
             "ESTADO": st.column_config.TextColumn("ESTADO"),
+            "COMENTARIOS": st.column_config.TextColumn(
+                "COMENTARIOS", help="Escribí aquí observaciones o notas"
+            ),
+            "GUARDADO": st.column_config.TextColumn(
+                "GUARDADO", help="SI indica registro histórico congelado"
+            ),
         },
         key="editor_tabla",
     )
 
-    # Sincronización en tiempo real
+    # Sincronización en tiempo real con el estado de sesión
     if st.session_state.get("editor_tabla"):
         for idx, cambios in st.session_state["editor_tabla"][
             "edited_rows"
@@ -422,21 +534,35 @@ if not df_filtrado.empty:
                 st.session_state["df_trabajo"].at[indice_real, campo] = str(val)
 
 # ---------------------------------------------------------
-# BOTÓN DE GUARDAR CAMBIOS
+# BOTÓN DE GUARDAR Y CONGELAR DIA
 # ---------------------------------------------------------
 st.markdown("---")
-if st.button("💾 Guardar Cambios en Google Sheets", type="primary", use_container_width=True):
+if st.button(
+    "💾 Guardar Cambios en Google Sheets",
+    type="primary",
+    use_container_width=True,
+):
     try:
         gc = obtener_cliente_gspread()
         sh = gc.open_by_key(ID_SHEET).worksheet("plantilla_partidas")
 
+        # Marcar las filas de la fecha actual como GUARDADO = "SI"
+        mask_guardar = (
+            st.session_state["df_trabajo"]["FECHA"].astype(str) == fecha_sel_str
+        )
+        st.session_state["df_trabajo"].loc[mask_guardar, "GUARDADO"] = "SI"
+
         df_a_enviar = st.session_state["df_trabajo"].copy().fillna("")
-        matriz_datos = [df_a_enviar.columns.tolist()] + df_a_enviar.astype(str).values.tolist()
+        matriz_datos = [
+            df_a_enviar.columns.tolist()
+        ] + df_a_enviar.astype(str).values.tolist()
 
         sh.clear()
         sh.update(range_name="A1", values=matriz_datos)
 
-        st.success("✅ ¡Base de datos guardada y actualizada correctamente en Google Sheets!")
+        st.success(
+            f"✅ ¡Despachos del {fecha_sel_str} guardados y congelados correctamente!"
+        )
         st.cache_data.clear()
         st.rerun()
     except Exception as err:
