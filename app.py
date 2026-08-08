@@ -470,13 +470,13 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TABLA INTERACTIVA CON RESALTADO PUNTUAL EN CABECERA
+# TABLA INTERACTIVA CON INDICADOR DE CABECERA Y RESALTADO DE FILA
 # ---------------------------------------------------------
 col_sub, col_btn = st.columns([3, 1])
 with col_sub:
     st.subheader(f"📡 Despachos del día: {fecha_sel_str}")
     st.caption(
-        "💡 **Leyenda:** Celdas en 🟡 **CABECERA** indican servicios de paso (no originan en RET) que requieren revisar horario."
+        "💡 **Cabeceras con 🟡 (ej: 🟡 LPL, 🟡 LIN):** Indican servicios de paso. Revisar su hora de llegada a RET."
     )
 
 with col_btn:
@@ -489,39 +489,36 @@ with col_btn:
     )
 
 
-def aplicar_estilo_tabla(df_in):
-    """
-    Aplica estilos por celda/fila:
-    1. Fila completa en rojo si está Demorado.
-    2. Fila completa en verde si está En Horario.
-    3. Celda puntual de 'CABECERA' en amarillo/naranja si NO es RET.
-    """
-    # DataFrame de estilos vacíos
-    styles = pd.DataFrame("", index=df_in.index, columns=df_in.columns)
+def aplicar_colores(row):
+    estado = row.get("ESTADO", "")
+    cabecera = str(row.get("CABECERA", "")).replace("🟡", "").strip().upper()
 
-    for idx, row in df_in.iterrows():
-        estado = str(row.get("ESTADO", ""))
-        cabecera = str(row.get("CABECERA", "")).strip().upper()
-
-        # Estilo de fila según Estado
-        if estado == "🔴 Demorado":
-            styles.loc[idx, :] = "background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"
-        elif estado == "🟢 En Horario":
-            styles.loc[idx, :] = "background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"
-
-        # Resaltado PUNTUAL en la celda CABECERA si NO es RET (Sobreescribe solo esa celda)
-        if cabecera != "RET" and cabecera != "":
-            styles.loc[idx, "CABECERA"] = (
-                "background-color: rgba(245, 158, 11, 0.45); "
-                "color: #fde047; "
-                "font-weight: bold;"
-            )
-
-    return styles
+    # Si está Demorado -> Fila Roja
+    if estado == "🔴 Demorado":
+        return ["background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"] * len(row)
+    # Si NO es RET -> Fila Ámbar/Naranja de alerta
+    elif cabecera != "RET" and cabecera != "":
+        return ["background-color: rgba(245, 158, 11, 0.25); color: #fde047;"] * len(row)
+    # Si está En Horario -> Fila Verde
+    elif estado == "🟢 En Horario":
+        return ["background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"] * len(row)
+    
+    return [""] * len(row)
 
 
 if not df_filtrado.empty:
     cols_disabled = ["DEMORA", "ESTADO"]
+
+    # Agregar el indicador 🟡 visual a la columna CABECERA si no es RET
+    df_vista = df_filtrado.copy()
+    
+    def formatear_cabecera(val):
+        clean_val = str(val).replace("🟡", "").strip()
+        if clean_val.upper() != "RET" and clean_val != "":
+            return f"🟡 {clean_val}"
+        return clean_val
+
+    df_vista["CABECERA"] = df_vista["CABECERA"].apply(formatear_cabecera)
 
     es_guardado_dia = (
         df_filtrado["GUARDADO"].astype(str).str.upper().eq("SI").all()
@@ -539,7 +536,7 @@ if not df_filtrado.empty:
             ]
         )
 
-    df_estilizado = df_filtrado.style.apply(aplicar_estilo_tabla, axis=None)
+    df_estilizado = df_vista.style.apply(aplicar_colores, axis=1)
 
     df_editado = st.data_editor(
         df_estilizado,
@@ -561,7 +558,7 @@ if not df_filtrado.empty:
         key="editor_tabla",
     )
 
-    # Sincronización precisa en tiempo real
+    # Sincronización limpia en tiempo real (limpiando el emoji 🟡 al guardar)
     if st.session_state.get("editor_tabla"):
         hubo_cambio_horario = False
         for idx, cambios in st.session_state["editor_tabla"][
@@ -569,7 +566,8 @@ if not df_filtrado.empty:
         ].items():
             indice_real = df_filtrado.index[idx]
             for campo, val in cambios.items():
-                st.session_state["df_trabajo"].at[indice_real, campo] = str(val)
+                val_limpio = str(val).replace("🟡", "").strip()
+                st.session_state["df_trabajo"].at[indice_real, campo] = val_limpio
                 if campo == "HORARIO":
                     hubo_cambio_horario = True
 
@@ -602,6 +600,10 @@ if st.button(
         )
 
         df_a_enviar = st.session_state["df_trabajo"].copy().fillna("")
+        
+        # Limpiar cualquier emoji residual antes de enviar a Google Sheets
+        df_a_enviar["CABECERA"] = df_a_enviar["CABECERA"].astype(str).str.replace("🟡", "").str.strip()
+
         matriz_datos = [
             df_a_enviar.columns.tolist()
         ] + df_a_enviar.astype(str).values.tolist()
@@ -610,7 +612,7 @@ if st.button(
         sh.update(range_name="A1", values=matriz_datos)
 
         st.success(
-            f"✅ ¡Cambios del {fecha_sel_str} guardados correctamente con resaltado en celdas de Cabecera!"
+            f"✅ ¡Cambios del {fecha_sel_str} guardados correctamente!"
         )
         st.cache_data.clear()
         st.rerun()
