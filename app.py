@@ -153,7 +153,7 @@ else:
 if "df_trabajo" not in st.session_state:
     st.session_state["df_trabajo"] = ordenar_por_horario(df_diario.copy())
 
-# Recalcular demoras respetando el HORARIO modificado
+# Recalcular demoras
 if not st.session_state["df_trabajo"].empty:
     st.session_state["df_trabajo"][["DEMORA", "ESTADO"]] = st.session_state[
         "df_trabajo"
@@ -408,7 +408,6 @@ if df_filtrado.empty:
                 df_c_base["COMENTARIOS"] = ""
                 df_c_base["GUARDADO"] = "NO"
 
-                # Cruzar con Base_Servicios tomando HORARIO_BASE solo como default
                 if not df_b_sub.empty:
                     df_nueva_prog = pd.merge(
                         df_c_base, df_b_sub, on="CODIGO", how="left"
@@ -471,13 +470,13 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TABLA INTERACTIVA CON PERMISO DE EDICIÓN DE HORARIOS
+# TABLA INTERACTIVA CON RESALTADO PUNTUAL EN CABECERA
 # ---------------------------------------------------------
 col_sub, col_btn = st.columns([3, 1])
 with col_sub:
     st.subheader(f"📡 Despachos del día: {fecha_sel_str}")
     st.caption(
-        "💡 Podés editar los HORARIOS para adaptarlos a Retiro. Al cambiar la hora se reordenará solo."
+        "💡 **Leyenda:** Celdas en 🟡 **CABECERA** indican servicios de paso (no originan en RET) que requieren revisar horario."
     )
 
 with col_btn:
@@ -490,17 +489,35 @@ with col_btn:
     )
 
 
-def aplicar_colores(row):
-    estado = row.get("ESTADO", "")
-    if estado == "🔴 Demorado":
-        return [
-            "background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"
-        ] * len(row)
-    elif estado == "🟢 En Horario":
-        return [
-            "background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"
-        ] * len(row)
-    return [""] * len(row)
+def aplicar_estilo_tabla(df_in):
+    """
+    Aplica estilos por celda/fila:
+    1. Fila completa en rojo si está Demorado.
+    2. Fila completa en verde si está En Horario.
+    3. Celda puntual de 'CABECERA' en amarillo/naranja si NO es RET.
+    """
+    # DataFrame de estilos vacíos
+    styles = pd.DataFrame("", index=df_in.index, columns=df_in.columns)
+
+    for idx, row in df_in.iterrows():
+        estado = str(row.get("ESTADO", ""))
+        cabecera = str(row.get("CABECERA", "")).strip().upper()
+
+        # Estilo de fila según Estado
+        if estado == "🔴 Demorado":
+            styles.loc[idx, :] = "background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"
+        elif estado == "🟢 En Horario":
+            styles.loc[idx, :] = "background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"
+
+        # Resaltado PUNTUAL en la celda CABECERA si NO es RET (Sobreescribe solo esa celda)
+        if cabecera != "RET" and cabecera != "":
+            styles.loc[idx, "CABECERA"] = (
+                "background-color: rgba(245, 158, 11, 0.45); "
+                "color: #fde047; "
+                "font-weight: bold;"
+            )
+
+    return styles
 
 
 if not df_filtrado.empty:
@@ -522,7 +539,7 @@ if not df_filtrado.empty:
             ]
         )
 
-    df_estilizado = df_filtrado.style.apply(aplicar_colores, axis=1)
+    df_estilizado = df_filtrado.style.apply(aplicar_estilo_tabla, axis=None)
 
     df_editado = st.data_editor(
         df_estilizado,
@@ -532,6 +549,7 @@ if not df_filtrado.empty:
         disabled=cols_disabled,
         column_config={
             "FECHA": st.column_config.TextColumn("FECHA"),
+            "CABECERA": st.column_config.TextColumn("CABECERA"),
             "HORARIO": st.column_config.TextColumn("HORARIO (RET)"),
             "DEMORA": st.column_config.NumberColumn(
                 "DEMORA (min)", format="%d min"
@@ -579,7 +597,6 @@ if st.button(
         )
         st.session_state["df_trabajo"].loc[mask_guardar, "GUARDADO"] = "SI"
 
-        # Garantizar orden antes de enviar
         st.session_state["df_trabajo"] = ordenar_por_horario(
             st.session_state["df_trabajo"]
         )
@@ -593,7 +610,7 @@ if st.button(
         sh.update(range_name="A1", values=matriz_datos)
 
         st.success(
-            f"✅ ¡Cambios del {fecha_sel_str} (incluyendo horarios modificados para Retiro) guardados con éxito!"
+            f"✅ ¡Cambios del {fecha_sel_str} guardados correctamente con resaltado en celdas de Cabecera!"
         )
         st.cache_data.clear()
         st.rerun()
