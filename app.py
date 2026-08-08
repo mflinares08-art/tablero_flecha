@@ -40,7 +40,7 @@ cols_orden = [
     "DEMORA",
     "ESTADO",
     "COMENTARIOS",
-    "GUARDADO",  # Marca interna para congelar edición
+    "GUARDADO",
 ]
 
 
@@ -94,6 +94,21 @@ def parsear_hora(texto_hora):
     return None
 
 
+def ordenar_por_horario(df_input):
+    """Ordena el DataFrame por la columna HORARIO cronológicamente."""
+    if df_input.empty or "HORARIO" not in df_input.columns:
+        return df_input
+
+    df_aux = df_input.copy()
+    df_aux["_minutos_sort"] = df_aux["HORARIO"].apply(
+        lambda x: parsear_hora(x) if parsear_hora(x) is not None else 9999
+    )
+    df_aux = df_aux.sort_values(by=["_minutos_sort"]).drop(
+        columns=["_minutos_sort"]
+    )
+    return df_aux.reset_index(drop=True)
+
+
 def calcular_demora_y_estado(row):
     min_horario = parsear_hora(row.get("HORARIO", ""))
     min_partio = parsear_hora(row.get("PARTIO", ""))
@@ -117,9 +132,9 @@ def calcular_demora_y_estado(row):
 # CARGA Y PREPARACIÓN DE DATOS
 # ---------------------------------------------------------
 try:
-    df_diario = cargar_pestana("plantilla_partidas")  # Pestaña acumulativa
-    df_base = cargar_pestana("Base_Servicios")  # API / Base Maestra
-    df_codigos_sheet = cargar_pestana("codigos")  # Nueva Pestaña con Lista Fija
+    df_diario = cargar_pestana("plantilla_partidas")
+    df_base = cargar_pestana("Base_Servicios")
+    df_codigos_sheet = cargar_pestana("codigos")
 except Exception as e:
     st.error(f"❌ Error al conectar con Google Sheets: {e}")
     st.stop()
@@ -136,7 +151,7 @@ else:
 
 # Estado de la Sesión
 if "df_trabajo" not in st.session_state:
-    st.session_state["df_trabajo"] = df_diario.copy()
+    st.session_state["df_trabajo"] = ordenar_por_horario(df_diario.copy())
 
 # Recalcular demoras
 if not st.session_state["df_trabajo"].empty:
@@ -230,7 +245,6 @@ buscar_destino = st.sidebar.text_input(
 st.sidebar.markdown("---")
 st.sidebar.subheader("➕ Agregar Servicio Manual")
 
-# Buffer de estado del formulario
 if "form_manual" not in st.session_state:
     st.session_state["form_manual"] = {
         "CODIGO": "",
@@ -314,10 +328,14 @@ with st.sidebar.form("form_nuevo_servicio"):
                 "COMENTARIOS": "",
                 "GUARDADO": "NO",
             }
-            st.session_state["df_trabajo"] = pd.concat(
+
+            # Concatenar y Re-ordenar por Horario automáticamente
+            df_actualizado = pd.concat(
                 [st.session_state["df_trabajo"], pd.DataFrame([nueva_fila])],
                 ignore_index=True,
             )
+            st.session_state["df_trabajo"] = ordenar_por_horario(df_actualizado)
+
             st.session_state["form_manual"] = {
                 "CODIGO": "",
                 "CABECERA": "",
@@ -326,7 +344,7 @@ with st.sidebar.form("form_nuevo_servicio"):
                 "EMPRESA": "",
                 "INTERNO": "",
             }
-            st.success(f"✅ ¡Servicio {cod_ingresado} añadido con éxito!")
+            st.success(f"✅ ¡Servicio {cod_ingresado} añadido y ordenado con éxito!")
             st.rerun()
 
 # ---------------------------------------------------------
@@ -349,8 +367,11 @@ if buscar_destino and not df.empty:
         df["ANUNCIO"].str.contains(buscar_destino, case=False, na=False)
     )
 
+# Filtrar y asegurar orden cronológico en la vista
 df_filtrado = (
-    df[mask].copy() if not df.empty else pd.DataFrame(columns=cols_orden)
+    ordenar_por_horario(df[mask].copy())
+    if not df.empty
+    else pd.DataFrame(columns=cols_orden)
 )
 
 # Carga Automática inicial desde la pestaña "codigos"
@@ -389,7 +410,7 @@ if df_filtrado.empty:
                 df_c_base["COMENTARIOS"] = ""
                 df_c_base["GUARDADO"] = "NO"
 
-                # Cruzar con Base_Servicios actual de la API
+                # Cruzar con Base_Servicios
                 if not df_b_sub.empty:
                     df_nueva_prog = pd.merge(
                         df_c_base, df_b_sub, on="CODIGO", how="left"
@@ -402,12 +423,15 @@ if df_filtrado.empty:
                         df_nueva_prog[c] = ""
                 df_nueva_prog = df_nueva_prog[cols_orden].fillna("")
 
-                st.session_state["df_trabajo"] = pd.concat(
+                # Concatenar y reordenar por horario
+                df_mezclado = pd.concat(
                     [st.session_state["df_trabajo"], df_nueva_prog],
                     ignore_index=True,
                 )
+                st.session_state["df_trabajo"] = ordenar_por_horario(df_mezclado)
+
                 st.success(
-                    f"🎉 ¡Día {fecha_sel_str} cargado con los códigos predeterminados y sus datos actuales de la API!"
+                    f"🎉 ¡Día {fecha_sel_str} cargado y ordenado cronológicamente!"
                 )
                 st.rerun()
 
@@ -452,7 +476,7 @@ col_sub, col_btn = st.columns([3, 1])
 with col_sub:
     st.subheader(f"📡 Despachos del día: {fecha_sel_str}")
     st.caption(
-        "💡 Los registros guardados con 'GUARDADO = SI' tienen sus datos congelados."
+        "💡 Los servicios están ordenados por HORARIO de salida. Los guardados figuran con 'GUARDADO = SI'."
     )
 
 with col_btn:
@@ -479,11 +503,8 @@ def aplicar_colores(row):
 
 
 if not df_filtrado.empty:
-    # Determinar qué columnas se deshabilitan
-    # Si la fila ya fue GUARDADA ("SI"), se deshabilitan las columnas base para que no se alteren
     cols_disabled = ["DEMORA", "ESTADO"]
 
-    # Evaluamos si todas o algunas filas están guardadas para proteger campos base
     es_guardado_dia = (
         df_filtrado["GUARDADO"].astype(str).str.upper().eq("SI").all()
     )
@@ -510,6 +531,7 @@ if not df_filtrado.empty:
         disabled=cols_disabled,
         column_config={
             "FECHA": st.column_config.TextColumn("FECHA"),
+            "HORARIO": st.column_config.TextColumn("HORARIO"),
             "DEMORA": st.column_config.NumberColumn(
                 "DEMORA (min)", format="%d min"
             ),
@@ -524,7 +546,7 @@ if not df_filtrado.empty:
         key="editor_tabla",
     )
 
-    # Sincronización en tiempo real con el estado de sesión
+    # Sincronización en tiempo real
     if st.session_state.get("editor_tabla"):
         for idx, cambios in st.session_state["editor_tabla"][
             "edited_rows"
@@ -534,7 +556,7 @@ if not df_filtrado.empty:
                 st.session_state["df_trabajo"].at[indice_real, campo] = str(val)
 
 # ---------------------------------------------------------
-# BOTÓN DE GUARDAR Y CONGELAR DIA
+# BOTÓN DE GUARDAR Y CONGELAR DÍA
 # ---------------------------------------------------------
 st.markdown("---")
 if st.button(
@@ -546,11 +568,15 @@ if st.button(
         gc = obtener_cliente_gspread()
         sh = gc.open_by_key(ID_SHEET).worksheet("plantilla_partidas")
 
-        # Marcar las filas de la fecha actual como GUARDADO = "SI"
         mask_guardar = (
             st.session_state["df_trabajo"]["FECHA"].astype(str) == fecha_sel_str
         )
         st.session_state["df_trabajo"].loc[mask_guardar, "GUARDADO"] = "SI"
+
+        # Asegurar orden antes de subir a Google Sheets
+        st.session_state["df_trabajo"] = ordenar_por_horario(
+            st.session_state["df_trabajo"]
+        )
 
         df_a_enviar = st.session_state["df_trabajo"].copy().fillna("")
         matriz_datos = [
@@ -561,7 +587,7 @@ if st.button(
         sh.update(range_name="A1", values=matriz_datos)
 
         st.success(
-            f"✅ ¡Despachos del {fecha_sel_str} guardados y congelados correctamente!"
+            f"✅ ¡Despachos del {fecha_sel_str} guardados y ordenados por horario!"
         )
         st.cache_data.clear()
         st.rerun()
