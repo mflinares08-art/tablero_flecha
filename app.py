@@ -1,6 +1,7 @@
 import zoneinfo
 from datetime import datetime
 import re
+import urllib.parse
 import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
@@ -126,6 +127,29 @@ def calcular_demora_y_estado(row):
 
     estado = "🟢 En Horario" if diff_min < 10 else "🔴 Demorado"
     return pd.Series([diff_min, estado])
+
+
+def armar_mensaje_despacho(row):
+    """Genera la frase personalizada para WhatsApp."""
+    horario = str(row.get("HORARIO", "")).strip()
+    empresa = str(row.get("EMPRESA", "")).strip()
+    anuncio = str(row.get("ANUNCIO", "")).strip()
+    estado = str(row.get("ESTADO", "")).strip()
+    demora = row.get("DEMORA", 0)
+    comentarios = str(row.get("COMENTARIOS", "")).strip()
+
+    # Construir el texto base según si está demorado o en horario
+    if "Demorado" in estado and demora > 0:
+        texto_estado = f"sale {demora} min demorado de Retiro"
+    else:
+        texto_estado = "sale a Horario de Retiro"
+
+    frase = f"{horario} {empresa} a {anuncio} {texto_estado}"
+
+    if comentarios and comentarios.upper() != "NAN":
+        frase += f" - {comentarios}"
+
+    return frase
 
 
 # ---------------------------------------------------------
@@ -470,7 +494,7 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TABLA INTERACTIVA CON EMOJI FORZADO EN LA VISTA
+# TABLA INTERACTIVA CON EMOJI Y GENERADOR DE WHATSAPP
 # ---------------------------------------------------------
 col_sub, col_btn = st.columns([3, 1])
 with col_sub:
@@ -573,6 +597,35 @@ if not df_filtrado.empty:
                 st.session_state["df_trabajo"]
             )
             st.rerun()
+
+    # ---------------------------------------------------------
+    # MODULO MENSAJE DESPACHO (WHATSAPP)
+    # ---------------------------------------------------------
+    st.markdown("### 📲 Mensaje Despacho (WhatsApp)")
+
+    col_sel_coche, col_btn_wa = st.columns([3, 1])
+
+    opciones_coches = [
+        f"{r.get('HORARIO', '')} | {r.get('EMPRESA', '')} -> {r.get('ANUNCIO', '')} (Código: {r.get('CODIGO', '')})"
+        for _, r in df_filtrado.iterrows()
+    ]
+
+    coche_elegido_idx = col_sel_coche.selectbox(
+        "Seleccionar coche para enviar aviso:",
+        range(len(opciones_coches)),
+        format_func=lambda x: opciones_coches[x],
+        key="select_coche_wa",
+    )
+
+    fila_seleccionada = df_filtrado.iloc[coche_elegido_idx]
+    texto_whatsapp = armar_mensaje_despacho(fila_seleccionada)
+    url_wa = f"https://api.whatsapp.com/send?text={urllib.parse.quote(texto_whatsapp)}"
+
+    with col_btn_wa:
+        st.write("<br/>", unsafe_allow_html=True)
+        st.link_button("📲 Enviar a WhatsApp", url_wa, use_container_width=True, type="primary")
+
+    st.code(texto_whatsapp, language="text")
 
 # ---------------------------------------------------------
 # BOTÓN DE GUARDAR CAMBIOS
