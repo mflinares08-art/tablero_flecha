@@ -1,7 +1,6 @@
 import zoneinfo
 from datetime import datetime
 import re
-import urllib.parse
 import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
@@ -27,7 +26,6 @@ SCOPES = [
 
 ID_SHEET = "1b-FnwWgy9bvdM83FQ2E_A7xp8bl9-OLkMT8VZVSIuuo"
 
-# Orden de columnas definitivo
 cols_orden = [
     "FECHA",
     "CODIGO",
@@ -96,7 +94,6 @@ def parsear_hora(texto_hora):
 
 
 def ordenar_por_horario(df_input):
-    """Ordena el DataFrame por la columna HORARIO cronológicamente."""
     if df_input.empty or "HORARIO" not in df_input.columns:
         return df_input
 
@@ -130,7 +127,6 @@ def calcular_demora_y_estado(row):
 
 
 def armar_mensaje_despacho(row):
-    """Genera la frase personalizada para WhatsApp."""
     horario = str(row.get("HORARIO", "")).strip()
     empresa = str(row.get("EMPRESA", "")).strip()
     anuncio = str(row.get("ANUNCIO", "")).strip()
@@ -138,7 +134,6 @@ def armar_mensaje_despacho(row):
     demora = row.get("DEMORA", 0)
     comentarios = str(row.get("COMENTARIOS", "")).strip()
 
-    # Construir el texto base según si está demorado o en horario
     if "Demorado" in estado and demora > 0:
         texto_estado = f"sale {demora} min demorado de Retiro"
     else:
@@ -146,7 +141,7 @@ def armar_mensaje_despacho(row):
 
     frase = f"{horario} {empresa} a {anuncio} {texto_estado}"
 
-    if comentarios and comentarios.upper() != "NAN":
+    if comentarios and comentarios.upper() != "NAN" and comentarios != "":
         frase += f" - {comentarios}"
 
     return frase
@@ -163,7 +158,6 @@ except Exception as e:
     st.error(f"❌ Error al conectar con Google Sheets: {e}")
     st.stop()
 
-# Garantizar columnas
 if not df_diario.empty:
     df_diario.columns = df_diario.columns.str.upper()
     for col in cols_orden:
@@ -173,11 +167,9 @@ if not df_diario.empty:
 else:
     df_diario = pd.DataFrame(columns=cols_orden)
 
-# Estado de la Sesión
 if "df_trabajo" not in st.session_state:
     st.session_state["df_trabajo"] = ordenar_por_horario(df_diario.copy())
 
-# Recalcular demoras
 if not st.session_state["df_trabajo"].empty:
     st.session_state["df_trabajo"][["DEMORA", "ESTADO"]] = st.session_state[
         "df_trabajo"
@@ -185,7 +177,6 @@ if not st.session_state["df_trabajo"].empty:
 
 df = st.session_state["df_trabajo"]
 
-# Normalización de Base_Servicios para búsquedas rápidas
 df_b_sub = pd.DataFrame()
 if not df_base.empty:
     renombres_base = {
@@ -264,7 +255,7 @@ buscar_destino = st.sidebar.text_input(
 )
 
 # ---------------------------------------------------------
-# FORMULARIO CON AUTOCOMPLETADO
+# FORMULARIO MANUAL
 # ---------------------------------------------------------
 st.sidebar.markdown("---")
 st.sidebar.subheader("➕ Agregar Servicio Manual")
@@ -371,7 +362,7 @@ with st.sidebar.form("form_nuevo_servicio"):
             st.rerun()
 
 # ---------------------------------------------------------
-# FILTRADO Y PROGRAMACIÓN AUTOMÁTICA DEL DÍA
+# FILTRADO Y PROGRAMACIÓN
 # ---------------------------------------------------------
 mask = (
     df["FECHA"].astype(str) == fecha_sel_str
@@ -391,12 +382,12 @@ if buscar_destino and not df.empty:
     )
 
 df_filtrado = (
-    ordenar_por_horario(df[mask].copy())
+    df[mask].copy()
     if not df.empty
     else pd.DataFrame(columns=cols_orden)
 )
 
-# Carga Automática inicial desde la pestaña "codigos"
+# Carga Automática inicial
 if df_filtrado.empty:
     st.info(
         f"📅 No hay servicios inicializados para la fecha **{fecha_sel_str}**."
@@ -454,9 +445,7 @@ if df_filtrado.empty:
                 )
                 st.session_state["df_trabajo"] = ordenar_por_horario(df_mezclado)
 
-                st.success(
-                    f"🎉 ¡Día {fecha_sel_str} cargado! Podés ajustar los horarios para Retiro cuando quieras."
-                )
+                st.success(f"🎉 ¡Día {fecha_sel_str} cargado!")
                 st.rerun()
 
 # ---------------------------------------------------------
@@ -494,14 +483,11 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TABLA INTERACTIVA CON EMOJI Y GENERADOR DE WHATSAPP
+# TABLA INTERACTIVA CON MENSAJE GENERADO
 # ---------------------------------------------------------
 col_sub, col_btn = st.columns([3, 1])
 with col_sub:
     st.subheader(f"📡 Despachos del día: {fecha_sel_str}")
-    st.caption(
-        "💡 **Cabeceras con 🟡 (ej: 🟡 LPL, 🟡 LIN):** Indican servicios de paso. Revisar su hora de llegada a RET."
-    )
 
 with col_btn:
     csv = df_filtrado.to_csv(index=False).encode("utf-8")
@@ -530,7 +516,6 @@ def aplicar_colores(row):
 if not df_filtrado.empty:
     cols_disabled = ["DEMORA", "ESTADO"]
 
-    # FORZAMOS LA TRANSFORMACIÓN VISUAL DE CABECERA DIRECTO EN EL DATAFRAME DE VISTA
     df_vista = df_filtrado.copy()
     
     def agregar_emoji_cabecera(val):
@@ -540,6 +525,9 @@ if not df_filtrado.empty:
         return str_val
 
     df_vista["CABECERA"] = df_vista["CABECERA"].apply(agregar_emoji_cabecera)
+
+    # Añadimos la frase generada directamente en una columna del DataFrame
+    df_vista["MENSAJE WA"] = df_filtrado.apply(armar_mensaje_despacho, axis=1)
 
     es_guardado_dia = (
         df_filtrado["GUARDADO"].astype(str).str.upper().eq("SI").all()
@@ -574,58 +562,20 @@ if not df_filtrado.empty:
             ),
             "ESTADO": st.column_config.TextColumn("ESTADO"),
             "COMENTARIOS": st.column_config.TextColumn("COMENTARIOS"),
+            "MENSAJE WA": st.column_config.TextColumn("📋 MENSAJE WHATSAPP", help="Copiar directamente este texto"),
             "GUARDADO": st.column_config.TextColumn("GUARDADO"),
         },
         key="editor_tabla",
     )
 
-    # Sincronización precisa y limpieza del emoji en el state
-    if st.session_state.get("editor_tabla"):
-        hubo_cambio_horario = False
-        for idx, cambios in st.session_state["editor_tabla"][
-            "edited_rows"
-        ].items():
+    # Captura fluida de ediciones
+    if st.session_state.get("editor_tabla") and st.session_state["editor_tabla"]["edited_rows"]:
+        for idx_str, cambios in st.session_state["editor_tabla"]["edited_rows"].items():
+            idx = int(idx_str)
             indice_real = df_filtrado.index[idx]
             for campo, val in cambios.items():
                 val_limpio = str(val).replace("🟡", "").strip()
                 st.session_state["df_trabajo"].at[indice_real, campo] = val_limpio
-                if campo == "HORARIO":
-                    hubo_cambio_horario = True
-
-        if hubo_cambio_horario:
-            st.session_state["df_trabajo"] = ordenar_por_horario(
-                st.session_state["df_trabajo"]
-            )
-            st.rerun()
-
-    # ---------------------------------------------------------
-    # MODULO MENSAJE DESPACHO (WHATSAPP)
-    # ---------------------------------------------------------
-    st.markdown("### 📲 Mensaje Despacho (WhatsApp)")
-
-    col_sel_coche, col_btn_wa = st.columns([3, 1])
-
-    opciones_coches = [
-        f"{r.get('HORARIO', '')} | {r.get('EMPRESA', '')} -> {r.get('ANUNCIO', '')} (Código: {r.get('CODIGO', '')})"
-        for _, r in df_filtrado.iterrows()
-    ]
-
-    coche_elegido_idx = col_sel_coche.selectbox(
-        "Seleccionar coche para enviar aviso:",
-        range(len(opciones_coches)),
-        format_func=lambda x: opciones_coches[x],
-        key="select_coche_wa",
-    )
-
-    fila_seleccionada = df_filtrado.iloc[coche_elegido_idx]
-    texto_whatsapp = armar_mensaje_despacho(fila_seleccionada)
-    url_wa = f"https://api.whatsapp.com/send?text={urllib.parse.quote(texto_whatsapp)}"
-
-    with col_btn_wa:
-        st.write("<br/>", unsafe_allow_html=True)
-        st.link_button("📲 Enviar a WhatsApp", url_wa, use_container_width=True, type="primary")
-
-    st.code(texto_whatsapp, language="text")
 
 # ---------------------------------------------------------
 # BOTÓN DE GUARDAR CAMBIOS
@@ -651,6 +601,10 @@ if st.button(
 
         df_a_enviar = st.session_state["df_trabajo"].copy().fillna("")
         df_a_enviar["CABECERA"] = df_a_enviar["CABECERA"].astype(str).str.replace("🟡", "").str.strip()
+
+        # Quitamos la columna auxiliar de mensaje si existiera
+        if "MENSAJE WA" in df_a_enviar.columns:
+            df_a_enviar = df_a_enviar.drop(columns=["MENSAJE WA"])
 
         matriz_datos = [
             df_a_enviar.columns.tolist()
