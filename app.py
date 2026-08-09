@@ -62,7 +62,7 @@ def obtener_cliente_gspread():
     return gspread.authorize(credentials)
 
 
-# Reducimos ttl a 10 segundos para rápida sincronización multidispositivo
+# Caché de 10 segundos
 @st.cache_data(ttl=10)
 def cargar_pestana(nombre_o_index):
     try:
@@ -222,14 +222,24 @@ st.title("🌐 Tablero en Vivo - Grupo Flecha")
 st.markdown("---")
 
 # ---------------------------------------------------------
-# FILTROS LATERALES Y BOTÓN DE SINCRONIZACIÓN
+# FILTROS LATERALES Y BOTÓN DE SINCRONIZACIÓN SEGURO
 # ---------------------------------------------------------
 st.sidebar.header("🔍 Filtros & Opciones")
 
-# Botón para forzar actualización desde celular o cualquier otro equipo
-if st.sidebar.button("🔄 Actualizar / Sincronizar Datos", use_container_width=True):
+if st.sidebar.button("🔄 Actualizar / Sincronizar", use_container_width=True):
     st.cache_data.clear()
-    st.session_state.pop("df_trabajo", None)
+    # Traemos los datos más recientes de Sheets pero conservamos lo que hay en memoria si ya fue modificado
+    df_nuevo_sheet = cargar_pestana("plantilla_partidas")
+    if not df_nuevo_sheet.empty:
+        df_nuevo_sheet.columns = df_nuevo_sheet.columns.str.upper()
+        for col in cols_orden:
+            if col not in df_nuevo_sheet.columns:
+                df_nuevo_sheet[col] = ""
+        df_nuevo_sheet = df_nuevo_sheet[cols_orden].copy()
+        
+        # Si la planilla tiene registros, los sincronizamos ordenados
+        st.session_state["df_trabajo"] = ordenar_por_horario(df_nuevo_sheet)
+    st.success("¡Sincronizado con Google Sheets!")
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -500,7 +510,7 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# CALLBACK PARA CAPTURAR EDICIONES Y REORDENAR POR HORARIO
+# CALLBACK PARA CAPTURAR EDICIONES Y GUARDAR AL INSTANTE
 # ---------------------------------------------------------
 def callback_guardar_ediciones():
     """Guarda cambios instantáneamente y reordena la tabla exclusivamente por HORARIO."""
@@ -524,7 +534,7 @@ def callback_guardar_ediciones():
                 "df_trabajo"
             ].apply(calcular_demora_y_estado, axis=1)
             
-            # Reordenar por la columna HORARIO
+            # Reordenar por HORARIO
             st.session_state["df_trabajo"] = ordenar_por_horario(
                 st.session_state["df_trabajo"]
             )
@@ -654,11 +664,9 @@ if st.button(
         sh.update(range_name="A1", values=matriz_datos)
 
         st.success(
-            f"✅ ¡Cambios del {fecha_sel_str} guardados correctamente!"
+            f"✅ ¡Cambios del {fecha_sel_str} guardados correctamente en Google Sheets!"
         )
-        # Sincronización multidispositivo: limpiamos caché e invalidamos la sesión
         st.cache_data.clear()
-        st.session_state.pop("df_trabajo", None)
         st.rerun()
     except Exception as err:
         st.error(f"❌ Error al guardar en Google Sheets: {err}")
