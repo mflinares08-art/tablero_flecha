@@ -62,7 +62,8 @@ def obtener_cliente_gspread():
     return gspread.authorize(credentials)
 
 
-@st.cache_data(ttl=15)
+# Reducimos ttl a 10 segundos para rápida sincronización multidispositivo
+@st.cache_data(ttl=10)
 def cargar_pestana(nombre_o_index):
     try:
         gc = obtener_cliente_gspread()
@@ -221,9 +222,17 @@ st.title("🌐 Tablero en Vivo - Grupo Flecha")
 st.markdown("---")
 
 # ---------------------------------------------------------
-# FILTROS LATERALES
+# FILTROS LATERALES Y BOTÓN DE SINCRONIZACIÓN
 # ---------------------------------------------------------
 st.sidebar.header("🔍 Filtros & Opciones")
+
+# Botón para forzar actualización desde celular o cualquier otro equipo
+if st.sidebar.button("🔄 Actualizar / Sincronizar Datos", use_container_width=True):
+    st.cache_data.clear()
+    st.session_state.pop("df_trabajo", None)
+    st.rerun()
+
+st.sidebar.markdown("---")
 
 fecha_hoy = datetime.now(TZ_ARG).date()
 if "fecha_seleccionada" not in st.session_state:
@@ -647,7 +656,9 @@ if st.button(
         st.success(
             f"✅ ¡Cambios del {fecha_sel_str} guardados correctamente!"
         )
+        # Sincronización multidispositivo: limpiamos caché e invalidamos la sesión
         st.cache_data.clear()
+        st.session_state.pop("df_trabajo", None)
         st.rerun()
     except Exception as err:
         st.error(f"❌ Error al guardar en Google Sheets: {err}")
