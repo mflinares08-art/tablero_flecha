@@ -94,6 +94,7 @@ def parsear_hora(texto_hora):
 
 
 def ordenar_por_horario(df_input):
+    """Ordena cronológicamente según la columna HORARIO exclusivamente."""
     if df_input.empty or "HORARIO" not in df_input.columns:
         return df_input
 
@@ -170,12 +171,11 @@ else:
 if "df_trabajo" not in st.session_state:
     st.session_state["df_trabajo"] = ordenar_por_horario(df_diario.copy())
 
+# Recalcular demoras
 if not st.session_state["df_trabajo"].empty:
     st.session_state["df_trabajo"][["DEMORA", "ESTADO"]] = st.session_state[
         "df_trabajo"
     ].apply(calcular_demora_y_estado, axis=1)
-
-df = st.session_state["df_trabajo"]
 
 df_b_sub = pd.DataFrame()
 if not df_base.empty:
@@ -236,18 +236,24 @@ fecha_sel = st.sidebar.date_input(
 )
 fecha_sel_str = str(fecha_sel)
 
+df_base_actual = st.session_state["df_trabajo"]
+
 empresas = ["Todas las empresas"] + sorted(
     list(
         set(
             str(e).strip()
-            for e in df["EMPRESA"].dropna().unique()
+            for e in df_base_actual["EMPRESA"].dropna().unique()
             if str(e).strip() and str(e).strip().upper() != "NAN"
         )
     )
 )
 empresa_sel = st.sidebar.selectbox("Empresa", empresas)
 
-estados = list(df["ESTADO"].unique()) if not df.empty else []
+estados = (
+    list(df_base_actual["ESTADO"].unique())
+    if not df_base_actual.empty
+    else []
+)
 estados_sel = st.sidebar.multiselect("Estado", estados, default=estados)
 
 buscar_destino = st.sidebar.text_input(
@@ -364,26 +370,28 @@ with st.sidebar.form("form_nuevo_servicio"):
 # ---------------------------------------------------------
 # FILTRADO Y PROGRAMACIÓN
 # ---------------------------------------------------------
+df_trabajo_actual = st.session_state["df_trabajo"]
+
 mask = (
-    df["FECHA"].astype(str) == fecha_sel_str
-    if not df.empty
+    df_trabajo_actual["FECHA"].astype(str) == fecha_sel_str
+    if not df_trabajo_actual.empty
     else pd.Series(dtype=bool)
 )
 
-if empresa_sel != "Todas las empresas" and not df.empty:
-    mask = mask & (df["EMPRESA"] == empresa_sel)
+if empresa_sel != "Todas las empresas" and not df_trabajo_actual.empty:
+    mask = mask & (df_trabajo_actual["EMPRESA"] == empresa_sel)
 
-if estados_sel and not df.empty:
-    mask = mask & (df["ESTADO"].isin(estados_sel))
+if estados_sel and not df_trabajo_actual.empty:
+    mask = mask & (df_trabajo_actual["ESTADO"].isin(estados_sel))
 
-if buscar_destino and not df.empty:
+if buscar_destino and not df_trabajo_actual.empty:
     mask = mask & (
-        df["ANUNCIO"].str.contains(buscar_destino, case=False, na=False)
+        df_trabajo_actual["ANUNCIO"].str.contains(buscar_destino, case=False, na=False)
     )
 
 df_filtrado = (
-    df[mask].copy()
-    if not df.empty
+    df_trabajo_actual[mask].copy()
+    if not df_trabajo_actual.empty
     else pd.DataFrame(columns=cols_orden)
 )
 
@@ -483,7 +491,38 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TABLA INTERACTIVA CON MENSAJE GENERADO
+# CALLBACK PARA CAPTURAR EDICIONES Y REORDENAR POR HORARIO
+# ---------------------------------------------------------
+def callback_guardar_ediciones():
+    """Guarda cambios instantáneamente y reordena la tabla exclusivamente por HORARIO."""
+    edits = st.session_state.get("editor_tabla", {}).get("edited_rows", {})
+    if edits and "df_indices_filtrados" in st.session_state:
+        indices_filtrados = st.session_state["df_indices_filtrados"]
+        hubo_cambio = False
+        for pos_str, cambios in edits.items():
+            pos_int = int(pos_str)
+            if pos_int < len(indices_filtrados):
+                idx_real = indices_filtrados[pos_int]
+                for campo, val in cambios.items():
+                    if campo != "MENSAJE WA":
+                        val_limpio = str(val).replace("🟡", "").strip()
+                        st.session_state["df_trabajo"].at[idx_real, campo] = val_limpio
+                        hubo_cambio = True
+
+        if hubo_cambio:
+            # Recalcular demoras
+            st.session_state["df_trabajo"][["DEMORA", "ESTADO"]] = st.session_state[
+                "df_trabajo"
+            ].apply(calcular_demora_y_estado, axis=1)
+            
+            # Reordenar por la columna HORARIO
+            st.session_state["df_trabajo"] = ordenar_por_horario(
+                st.session_state["df_trabajo"]
+            )
+
+
+# ---------------------------------------------------------
+# TABLA INTERACTIVA DE DATOS
 # ---------------------------------------------------------
 col_sub, col_btn = st.columns([3, 1])
 with col_sub:
@@ -514,10 +553,12 @@ def aplicar_colores(row):
 
 
 if not df_filtrado.empty:
+    st.session_state["df_indices_filtrados"] = df_filtrado.index.tolist()
+
     cols_disabled = ["DEMORA", "ESTADO"]
 
     df_vista = df_filtrado.copy()
-    
+
     def agregar_emoji_cabecera(val):
         str_val = str(val).replace("🟡", "").strip()
         if str_val.upper() != "RET" and str_val != "":
@@ -525,8 +566,6 @@ if not df_filtrado.empty:
         return str_val
 
     df_vista["CABECERA"] = df_vista["CABECERA"].apply(agregar_emoji_cabecera)
-
-    # Añadimos la frase generada directamente en una columna del DataFrame
     df_vista["MENSAJE WA"] = df_filtrado.apply(armar_mensaje_despacho, axis=1)
 
     es_guardado_dia = (
@@ -547,7 +586,7 @@ if not df_filtrado.empty:
 
     df_estilizado = df_vista.style.apply(aplicar_colores, axis=1)
 
-    df_editado = st.data_editor(
+    st.data_editor(
         df_estilizado,
         use_container_width=True,
         height=420,
@@ -557,6 +596,7 @@ if not df_filtrado.empty:
             "FECHA": st.column_config.TextColumn("FECHA"),
             "CABECERA": st.column_config.TextColumn("CABECERA"),
             "HORARIO": st.column_config.TextColumn("HORARIO (RET)"),
+            "PARTIO": st.column_config.TextColumn("PARTIO (HH:MM)"),
             "DEMORA": st.column_config.NumberColumn(
                 "DEMORA (min)", format="%d min"
             ),
@@ -566,19 +606,11 @@ if not df_filtrado.empty:
             "GUARDADO": st.column_config.TextColumn("GUARDADO"),
         },
         key="editor_tabla",
+        on_change=callback_guardar_ediciones,
     )
 
-    # Captura fluida de ediciones
-    if st.session_state.get("editor_tabla") and st.session_state["editor_tabla"]["edited_rows"]:
-        for idx_str, cambios in st.session_state["editor_tabla"]["edited_rows"].items():
-            idx = int(idx_str)
-            indice_real = df_filtrado.index[idx]
-            for campo, val in cambios.items():
-                val_limpio = str(val).replace("🟡", "").strip()
-                st.session_state["df_trabajo"].at[indice_real, campo] = val_limpio
-
 # ---------------------------------------------------------
-# BOTÓN DE GUARDAR CAMBIOS
+# BOTÓN DE GUARDAR CAMBIOS EN GOOGLE SHEETS
 # ---------------------------------------------------------
 st.markdown("---")
 if st.button(
@@ -602,7 +634,6 @@ if st.button(
         df_a_enviar = st.session_state["df_trabajo"].copy().fillna("")
         df_a_enviar["CABECERA"] = df_a_enviar["CABECERA"].astype(str).str.replace("🟡", "").str.strip()
 
-        # Quitamos la columna auxiliar de mensaje si existiera
         if "MENSAJE WA" in df_a_enviar.columns:
             df_a_enviar = df_a_enviar.drop(columns=["MENSAJE WA"])
 
