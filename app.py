@@ -62,40 +62,72 @@ def obtener_cliente_gspread():
     return gspread.authorize(credentials)
 
 
-# TTL de 5 segundos para sincronización rápida entre dispositivos
-@st.cache_data(ttl=5)
-def cargar_pestana(nombre_o_index):
+# Aumentamos a 15 seg para evitar limite de cuota de Google
+@st.cache_data(ttl=15)
+def cargar_pestana_flexible(nombre_buscado):
+    """Busca una pestaña sin importar mayúsculas/minúsculas/tildes."""
     try:
         gc = obtener_cliente_gspread()
         spreadsheet = gc.open_by_key(ID_SHEET)
 
-        if isinstance(nombre_o_index, int):
-            sheet = spreadsheet.get_worksheet(nombre_o_index)
-        else:
-            sheet = spreadsheet.worksheet(nombre_o_index)
+        target_sheet = None
+        for w in spreadsheet.worksheets():
+            # Limpiamos nombre de pestaña para comparar
+            nombre_limpio = (
+                w.title.lower()
+                .replace("ó", "o")
+                .replace("í", "i")
+                .replace("á", "a")
+                .strip()
+            )
+            buscado_limpio = (
+                nombre_buscado.lower()
+                .replace("ó", "o")
+                .replace("í", "i")
+                .replace("á", "a")
+                .strip()
+            )
+            if nombre_limpio == buscado_limpio:
+                target_sheet = w
+                break
 
-        data = sheet.get_all_values()
-        if not data or len(data) < 2:
+        if not target_sheet:
             return pd.DataFrame(columns=cols_orden)
 
-        headers = [str(h).strip() for h in data[0]]
-        df = pd.DataFrame(data[1:], columns=headers)
+        data = target_sheet.get_all_values()
+        if not data or len(data) < 1:
+            return pd.DataFrame(columns=cols_orden)
 
-        # Normalizar columnas a mayúsculas para evitar desfasajes
-        df.columns = df.columns.str.upper()
+        headers = [str(h).strip().upper() for h in data[0]]
+
+        if len(data) == 1:
+            return pd.DataFrame(columns=headers)
+
+        df = pd.DataFrame(data[1:], columns=headers)
 
         for col in cols_orden:
             if col not in df.columns:
                 df[col] = ""
-        return df[cols_orden].copy()
-    except Exception:
+        return df
+    except Exception as e:
+        st.warning(f"Aviso al cargar '{nombre_buscado}': {e}")
         return pd.DataFrame(columns=cols_orden)
 
 
 def guardar_todo_en_sheets(df_completo):
     """Escribe los datos actualizados directo en la planilla e invalida caché local."""
     gc = obtener_cliente_gspread()
-    sh = gc.open_by_key(ID_SHEET).worksheet("plantilla_partidas")
+
+    # Buscar la pestaña plantilla_partidas
+    spreadsheet = gc.open_by_key(ID_SHEET)
+    sh = None
+    for w in spreadsheet.worksheets():
+        if "plantilla" in w.title.lower() or "partida" in w.title.lower():
+            sh = w
+            break
+
+    if not sh:
+        sh = spreadsheet.worksheet("plantilla_partidas")
 
     df_a_enviar = df_completo.copy().fillna("")
     df_a_enviar["CABECERA"] = (
@@ -125,7 +157,6 @@ def parsear_hora(texto_hora):
 
 
 def ordenar_por_horario(df_input):
-    """Ordena cronológicamente según la columna HORARIO exclusivamente."""
     if df_input.empty or "HORARIO" not in df_input.columns:
         return df_input
 
@@ -183,9 +214,9 @@ def armar_mensaje_despacho(row):
 # CARGA DE DATOS DESDE SHEETS
 # ---------------------------------------------------------
 try:
-    df_diario = cargar_pestana("plantilla_partidas")
-    df_base = cargar_pestana("Base_Servicios")
-    df_codigos_sheet = cargar_pestana("codigos")
+    df_diario = cargar_pestana_flexible("plantilla_partidas")
+    df_base = cargar_pestana_flexible("Base_Servicios")
+    df_codigos_sheet = cargar_pestana_flexible("codigos")
 except Exception as e:
     st.error(f"❌ Error al conectar con Google Sheets: {e}")
     st.stop()
@@ -204,18 +235,19 @@ st.session_state["df_trabajo"] = df_trabajo
 df_b_sub = pd.DataFrame()
 if not df_base.empty:
     renombres_base = {
-        "Código": "CODIGO",
         "CÓDIGO": "CODIGO",
-        "Origen": "CABECERA",
-        "Se anuncia a": "ANUNCIO",
-        "Código de transportista": "EMPRESA",
-        "Interno": "INTERNO",
+        "CODIGO": "CODIGO",
+        "ORIGEN": "CABECERA",
+        "SE ANUNCIA A": "ANUNCIO",
+        "CÓDIGO DE TRANSPORTISTA": "EMPRESA",
+        "CODIGO DE TRANSPORTISTA": "EMPRESA",
+        "INTERNO": "INTERNO",
     }
     df_b_clean = df_base.rename(columns=renombres_base).copy()
 
-    if "Fecha salida" in df_b_clean.columns:
+    if "FECHA SALIDA" in df_b_clean.columns:
         df_b_clean["HORARIO_BASE"] = pd.to_datetime(
-            df_b_clean["Fecha salida"], errors="coerce"
+            df_b_clean["FECHA SALIDA"], errors="coerce"
         ).dt.strftime("%H:%M")
 
     cols_b = ["CODIGO", "CABECERA", "HORARIO_BASE", "ANUNCIO", "EMPRESA", "INTERNO"]
@@ -250,12 +282,10 @@ st.markdown("---")
 # ---------------------------------------------------------
 st.sidebar.header("🔍 Filtros & Opciones")
 
-if st.sidebar.button("🔄 Actualizar / Sincronizar", use_container_width=True):
+if st.sidebar.button("🔄 Refrescar Nube", use_container_width=True):
     st.cache_data.clear()
-    st.success("¡Sincronizado con Google Sheets!")
     st.rerun()
 
-# Auto-refresco ideal para pantallas/tablets
 auto_refresco = st.sidebar.checkbox("📡 Auto-actualizar cada 30 seg", value=False)
 if auto_refresco:
     import time
@@ -276,13 +306,11 @@ fecha_sel = st.sidebar.date_input(
 )
 fecha_sel_str = str(fecha_sel)
 
-df_base_actual = st.session_state["df_trabajo"]
-
 empresas = ["Todas las empresas"] + sorted(
     list(
         set(
             str(e).strip()
-            for e in df_base_actual["EMPRESA"].dropna().unique()
+            for e in df_trabajo["EMPRESA"].dropna().unique()
             if str(e).strip() and str(e).strip().upper() != "NAN"
         )
     )
@@ -290,8 +318,8 @@ empresas = ["Todas las empresas"] + sorted(
 empresa_sel = st.sidebar.selectbox("Empresa", empresas)
 
 estados = (
-    list(df_base_actual["ESTADO"].unique())
-    if not df_base_actual.empty
+    list(df_trabajo["ESTADO"].unique())
+    if not df_trabajo.empty
     else []
 )
 estados_sel = st.sidebar.multiselect("Estado", estados, default=estados)
@@ -340,12 +368,10 @@ if col_auto1.button("🔍 Buscar Datos"):
                 "EMPRESA": str(row_m.get("EMPRESA", "")),
                 "INTERNO": str(row_m.get("INTERNO", "")),
             }
-            st.sidebar.success("¡Datos encontrados y cargados!")
+            st.sidebar.success("¡Datos encontrados!")
             st.rerun()
         else:
             st.sidebar.error("Código no encontrado en Base_Servicios.")
-    else:
-        st.sidebar.error("Base_Servicios está vacía.")
 
 with st.sidebar.form("form_nuevo_servicio"):
     f_cabecera = st.text_input(
@@ -367,7 +393,7 @@ with st.sidebar.form("form_nuevo_servicio"):
         "Interno", value=st.session_state["form_manual"]["INTERNO"]
     )
 
-    btn_agregar = st.form_submit_button("➕ Añadir al día actual")
+    btn_agregar = st.form_submit_button("➕ Añadir y Guardar en Nube")
 
     if btn_agregar:
         if not cod_ingresado or not f_horario:
@@ -404,38 +430,36 @@ with st.sidebar.form("form_nuevo_servicio"):
                 "EMPRESA": "",
                 "INTERNO": "",
             }
-            st.success(f"✅ ¡Servicio {cod_ingresado} añadido con éxito!")
+            st.success(f"✅ ¡Servicio {cod_ingresado} guardado en la nube!")
             st.rerun()
 
 # ---------------------------------------------------------
 # FILTRADO Y PROGRAMACIÓN
 # ---------------------------------------------------------
-df_trabajo_actual = st.session_state["df_trabajo"]
-
 mask = (
-    df_trabajo_actual["FECHA"].astype(str) == fecha_sel_str
-    if not df_trabajo_actual.empty
+    df_trabajo["FECHA"].astype(str) == fecha_sel_str
+    if not df_trabajo.empty
     else pd.Series(dtype=bool)
 )
 
-if empresa_sel != "Todas las empresas" and not df_trabajo_actual.empty:
-    mask = mask & (df_trabajo_actual["EMPRESA"] == empresa_sel)
+if empresa_sel != "Todas las empresas" and not df_trabajo.empty:
+    mask = mask & (df_trabajo["EMPRESA"] == empresa_sel)
 
-if estados_sel and not df_trabajo_actual.empty:
-    mask = mask & (df_trabajo_actual["ESTADO"].isin(estados_sel))
+if estados_sel and not df_trabajo.empty:
+    mask = mask & (df_trabajo["ESTADO"].isin(estados_sel))
 
-if buscar_destino and not df_trabajo_actual.empty:
+if buscar_destino and not df_trabajo.empty:
     mask = mask & (
-        df_trabajo_actual["ANUNCIO"].str.contains(buscar_destino, case=False, na=False)
+        df_trabajo["ANUNCIO"].str.contains(buscar_destino, case=False, na=False)
     )
 
 df_filtrado = (
-    df_trabajo_actual[mask].copy()
-    if not df_trabajo_actual.empty
+    df_trabajo[mask].copy()
+    if not df_trabajo.empty
     else pd.DataFrame(columns=cols_orden)
 )
 
-# Carga Automática inicial
+# Carga Automática inicial con diagnóstico
 if df_filtrado.empty:
     st.info(
         f"📅 No hay servicios inicializados para la fecha **{fecha_sel_str}**."
@@ -448,55 +472,54 @@ if df_filtrado.empty:
             use_container_width=True,
         ):
             if df_codigos_sheet.empty:
-                st.error(
-                    "❌ La pestaña 'codigos' está vacía o no existe en Google Sheets."
-                )
+                st.error("❌ No se encontraron datos en la pestaña 'codigos'. Revisa el nombre de la pestaña en Google Sheets.")
             else:
-                col_cod = [
-                    c for c in df_codigos_sheet.columns if "CODIGO" in c.upper()
-                ]
+                # Buscar columna que contenga CODIGO
+                col_cod = [c for c in df_codigos_sheet.columns if "CODIGO" in c.upper() or "CÓDIGO" in c.upper()]
                 nombre_col_cod = col_cod[0] if col_cod else df_codigos_sheet.columns[0]
 
                 df_c_base = df_codigos_sheet[[nombre_col_cod]].copy()
                 df_c_base.columns = ["CODIGO"]
-                df_c_base = df_c_base[
-                    df_c_base["CODIGO"].astype(str).str.strip() != ""
-                ].drop_duplicates()
+                df_c_base["CODIGO"] = df_c_base["CODIGO"].astype(str).str.strip()
+                df_c_base = df_c_base[df_c_base["CODIGO"] != ""].drop_duplicates()
 
-                df_c_base["FECHA"] = fecha_sel_str
-                df_c_base["PLAT"] = ""
-                df_c_base["PARTIO"] = ""
-                df_c_base["DEMORA"] = 0
-                df_c_base["ESTADO"] = "⏳ Pendiente"
-                df_c_base["COMENTARIOS"] = ""
-                df_c_base["GUARDADO"] = "NO"
-
-                if not df_b_sub.empty:
-                    df_nueva_prog = pd.merge(
-                        df_c_base, df_b_sub, on="CODIGO", how="left"
-                    )
-                    if "HORARIO_BASE" in df_nueva_prog.columns:
-                        df_nueva_prog["HORARIO"] = df_nueva_prog["HORARIO_BASE"]
-                        df_nueva_prog = df_nueva_prog.drop(columns=["HORARIO_BASE"])
+                if df_c_base.empty:
+                    st.warning("⚠️ Se leyó la pestaña 'codigos', pero no había ningún código válido escrito en esa columna.")
                 else:
-                    df_nueva_prog = df_c_base
-                    df_nueva_prog["HORARIO"] = ""
+                    df_c_base["FECHA"] = fecha_sel_str
+                    df_c_base["PLAT"] = ""
+                    df_c_base["PARTIO"] = ""
+                    df_c_base["DEMORA"] = 0
+                    df_c_base["ESTADO"] = "⏳ Pendiente"
+                    df_c_base["COMENTARIOS"] = ""
+                    df_c_base["GUARDADO"] = "NO"
 
-                for c in cols_orden:
-                    if c not in df_nueva_prog.columns:
-                        df_nueva_prog[c] = ""
-                df_nueva_prog = df_nueva_prog[cols_orden].fillna("")
+                    if not df_b_sub.empty:
+                        # Convertir ambas a string para evitar fallos de cruce
+                        df_c_base["CODIGO"] = df_c_base["CODIGO"].astype(str)
+                        df_b_sub["CODIGO"] = df_b_sub["CODIGO"].astype(str)
 
-                df_mezclado = pd.concat(
-                    [st.session_state["df_trabajo"], df_nueva_prog],
-                    ignore_index=True,
-                )
-                df_mezclado = ordenar_por_horario(df_mezclado)
+                        df_nueva_prog = pd.merge(
+                            df_c_base, df_b_sub, on="CODIGO", how="left"
+                        )
+                        if "HORARIO_BASE" in df_nueva_prog.columns:
+                            df_nueva_prog["HORARIO"] = df_nueva_prog["HORARIO_BASE"]
+                            df_nueva_prog = df_nueva_prog.drop(columns=["HORARIO_BASE"])
+                    else:
+                        df_nueva_prog = df_c_base
+                        df_nueva_prog["HORARIO"] = ""
 
-                guardar_todo_en_sheets(df_mezclado)
+                    for c in cols_orden:
+                        if c not in df_nueva_prog.columns:
+                            df_nueva_prog[c] = ""
+                    df_nueva_prog = df_nueva_prog[cols_orden].fillna("")
 
-                st.success(f"🎉 ¡Día {fecha_sel_str} cargado!")
-                st.rerun()
+                    df_mezclado = pd.concat([df_trabajo, df_nueva_prog], ignore_index=True)
+                    df_mezclado = ordenar_por_horario(df_mezclado)
+
+                    guardar_todo_en_sheets(df_mezclado)
+                    st.success(f"🎉 ¡Se programaron {len(df_nueva_prog)} servicios para el día {fecha_sel_str}!")
+                    st.rerun()
 
 # ---------------------------------------------------------
 # MÉTRICAS
@@ -533,10 +556,10 @@ col4.metric(
 st.markdown("<br/>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# CALLBACK PARA CAPTURAR EDICIONES Y GUARDAR AL INSTANTE
+# CALLBACK: IMPACTA DIRECTO EN LA NUBE TRAS EDITAR
 # ---------------------------------------------------------
 def callback_guardar_ediciones():
-    """Guarda cambios instantáneamente y reordena la tabla exclusivamente por HORARIO."""
+    """Toma la edición de la tabla y la sincroniza al instante con Google Sheets."""
     edits = st.session_state.get("editor_tabla", {}).get("edited_rows", {})
     if edits and "df_indices_filtrados" in st.session_state:
         indices_filtrados = st.session_state["df_indices_filtrados"]
@@ -651,26 +674,21 @@ if not df_filtrado.empty:
     )
 
 # ---------------------------------------------------------
-# BOTÓN DE GUARDAR CAMBIOS EN GOOGLE SHEETS
+# BOTÓN DE CIERRE DE DÍA
 # ---------------------------------------------------------
 st.markdown("---")
 if st.button(
-    "💾 Guardar Cambios en Google Sheets",
+    "💾 Confirmar y Cerrar Día en Google Sheets",
     type="primary",
     use_container_width=True,
 ):
     try:
-        mask_guardar = (
-            st.session_state["df_trabajo"]["FECHA"].astype(str) == fecha_sel_str
-        )
-        st.session_state["df_trabajo"].loc[mask_guardar, "GUARDADO"] = "SI"
+        mask_guardar = df_trabajo["FECHA"].astype(str) == fecha_sel_str
+        df_trabajo.loc[mask_guardar, "GUARDADO"] = "SI"
 
-        df_ordenado = ordenar_por_horario(st.session_state["df_trabajo"])
-        guardar_todo_en_sheets(df_ordenado)
+        guardar_todo_en_sheets(df_trabajo)
 
-        st.success(
-            f"✅ ¡Cambios del {fecha_sel_str} guardados correctamente en Google Sheets!"
-        )
+        st.success(f"✅ Día {fecha_sel_str} marcado como GUARDADO correctamente.")
         st.rerun()
     except Exception as err:
         st.error(f"❌ Error al guardar en Google Sheets: {err}")
