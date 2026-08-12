@@ -62,7 +62,6 @@ def obtener_cliente_gspread():
     return gspread.authorize(credentials)
 
 
-# Aumentamos a 15 seg para evitar limite de cuota de Google
 @st.cache_data(ttl=15)
 def cargar_pestana_flexible(nombre_buscado):
     """Busca una pestaña sin importar mayúsculas/minúsculas/tildes."""
@@ -72,7 +71,6 @@ def cargar_pestana_flexible(nombre_buscado):
 
         target_sheet = None
         for w in spreadsheet.worksheets():
-            # Limpiamos nombre de pestaña para comparar
             nombre_limpio = (
                 w.title.lower()
                 .replace("ó", "o")
@@ -92,11 +90,11 @@ def cargar_pestana_flexible(nombre_buscado):
                 break
 
         if not target_sheet:
-            return pd.DataFrame(columns=cols_orden)
+            return pd.DataFrame()
 
         data = target_sheet.get_all_values()
         if not data or len(data) < 1:
-            return pd.DataFrame(columns=cols_orden)
+            return pd.DataFrame()
 
         headers = [str(h).strip().upper() for h in data[0]]
 
@@ -104,22 +102,17 @@ def cargar_pestana_flexible(nombre_buscado):
             return pd.DataFrame(columns=headers)
 
         df = pd.DataFrame(data[1:], columns=headers)
-
-        for col in cols_orden:
-            if col not in df.columns:
-                df[col] = ""
         return df
     except Exception as e:
         st.warning(f"Aviso al cargar '{nombre_buscado}': {e}")
-        return pd.DataFrame(columns=cols_orden)
+        return pd.DataFrame()
 
 
 def guardar_todo_en_sheets(df_completo):
     """Escribe los datos actualizados directo en la planilla e invalida caché local."""
     gc = obtener_cliente_gspread()
-
-    # Buscar la pestaña plantilla_partidas
     spreadsheet = gc.open_by_key(ID_SHEET)
+    
     sh = None
     for w in spreadsheet.worksheets():
         if "plantilla" in w.title.lower() or "partida" in w.title.lower():
@@ -221,6 +214,15 @@ except Exception as e:
     st.error(f"❌ Error al conectar con Google Sheets: {e}")
     st.stop()
 
+# Normalización de df_diario
+if not df_diario.empty:
+    for col in cols_orden:
+        if col not in df_diario.columns:
+            df_diario[col] = ""
+    df_diario = df_diario[cols_orden].copy()
+else:
+    df_diario = pd.DataFrame(columns=cols_orden)
+
 # Cargar y ordenar datos sincronizados de Google Sheets
 df_trabajo = ordenar_por_horario(df_diario.copy())
 
@@ -231,28 +233,40 @@ if not df_trabajo.empty:
 
 st.session_state["df_trabajo"] = df_trabajo
 
-# Base Servicios
+# Prepara Base Servicios de forma inteligente
 df_b_sub = pd.DataFrame()
 if not df_base.empty:
-    renombres_base = {
-        "CÓDIGO": "CODIGO",
-        "CODIGO": "CODIGO",
-        "ORIGEN": "CABECERA",
-        "SE ANUNCIA A": "ANUNCIO",
-        "CÓDIGO DE TRANSPORTISTA": "EMPRESA",
-        "CODIGO DE TRANSPORTISTA": "EMPRESA",
-        "INTERNO": "INTERNO",
-    }
-    df_b_clean = df_base.rename(columns=renombres_base).copy()
+    df_b_clean = df_base.copy()
+    
+    # Mapeo universal de columnas posibles
+    mapeo_cols = {}
+    for col in df_b_clean.columns:
+        col_u = col.upper().replace("Ó", "O").replace("Í", "I").strip()
+        if "CODIGO" in col_u:
+            mapeo_cols[col] = "CODIGO"
+        elif "ORIGEN" in col_u or "CABECERA" in col_u:
+            mapeo_cols[col] = "CABECERA"
+        elif "ANUNCIO" in col_u or "SE ANUNCIA" in col_u:
+            mapeo_cols[col] = "ANUNCIO"
+        elif "TRANSPORTISTA" in col_u or "EMPRESA" in col_u:
+            mapeo_cols[col] = "EMPRESA"
+        elif "INTERNO" in col_u:
+            mapeo_cols[col] = "INTERNO"
+        elif "FECHA SALIDA" in col_u or "HORARIO" in col_u:
+            mapeo_cols[col] = "HORARIO_RAW"
 
-    if "FECHA SALIDA" in df_b_clean.columns:
+    df_b_clean = df_b_clean.rename(columns=mapeo_cols)
+
+    if "HORARIO_RAW" in df_b_clean.columns:
         df_b_clean["HORARIO_BASE"] = pd.to_datetime(
-            df_b_clean["FECHA SALIDA"], errors="coerce"
+            df_b_clean["HORARIO_RAW"], errors="coerce"
         ).dt.strftime("%H:%M")
 
     cols_b = ["CODIGO", "CABECERA", "HORARIO_BASE", "ANUNCIO", "EMPRESA", "INTERNO"]
     cols_b_ex = [c for c in cols_b if c in df_b_clean.columns]
-    df_b_sub = df_b_clean[cols_b_ex].drop_duplicates(subset=["CODIGO"])
+    
+    if "CODIGO" in cols_b_ex:
+        df_b_sub = df_b_clean[cols_b_ex].drop_duplicates(subset=["CODIGO"])
 
 # ---------------------------------------------------------
 # INTERFAZ & ESTILOS
@@ -354,7 +368,7 @@ col_auto1, col_auto2 = st.sidebar.columns([1, 1])
 if col_auto1.button("🔍 Buscar Datos"):
     if not cod_ingresado.strip():
         st.sidebar.warning("Ingresá un código para buscar.")
-    elif not df_b_sub.empty:
+    elif not df_b_sub.empty and "CODIGO" in df_b_sub.columns:
         match = df_b_sub[
             df_b_sub["CODIGO"].astype(str).str.strip() == cod_ingresado.strip()
         ]
@@ -372,6 +386,8 @@ if col_auto1.button("🔍 Buscar Datos"):
             st.rerun()
         else:
             st.sidebar.error("Código no encontrado en Base_Servicios.")
+    else:
+        st.sidebar.error("Base_Servicios está vacía o sin columna CODIGO.")
 
 with st.sidebar.form("form_nuevo_servicio"):
     f_cabecera = st.text_input(
@@ -434,7 +450,7 @@ with st.sidebar.form("form_nuevo_servicio"):
             st.rerun()
 
 # ---------------------------------------------------------
-# FILTRADO Y PROGRAMACIÓN
+# FILTRADO Y PROGRAMACIÓN DE DÍA
 # ---------------------------------------------------------
 mask = (
     df_trabajo["FECHA"].astype(str) == fecha_sel_str
@@ -459,7 +475,7 @@ df_filtrado = (
     else pd.DataFrame(columns=cols_orden)
 )
 
-# Carga Automática inicial con diagnóstico
+# Carga Automática inicial súper segura
 if df_filtrado.empty:
     st.info(
         f"📅 No hay servicios inicializados para la fecha **{fecha_sel_str}**."
@@ -472,9 +488,8 @@ if df_filtrado.empty:
             use_container_width=True,
         ):
             if df_codigos_sheet.empty:
-                st.error("❌ No se encontraron datos en la pestaña 'codigos'. Revisa el nombre de la pestaña en Google Sheets.")
+                st.error("❌ No se encontraron datos en la pestaña 'codigos'.")
             else:
-                # Buscar columna que contenga CODIGO
                 col_cod = [c for c in df_codigos_sheet.columns if "CODIGO" in c.upper() or "CÓDIGO" in c.upper()]
                 nombre_col_cod = col_cod[0] if col_cod else df_codigos_sheet.columns[0]
 
@@ -484,7 +499,7 @@ if df_filtrado.empty:
                 df_c_base = df_c_base[df_c_base["CODIGO"] != ""].drop_duplicates()
 
                 if df_c_base.empty:
-                    st.warning("⚠️ Se leyó la pestaña 'codigos', pero no había ningún código válido escrito en esa columna.")
+                    st.warning("⚠️ No se encontraron códigos válidos en la pestaña 'codigos'.")
                 else:
                     df_c_base["FECHA"] = fecha_sel_str
                     df_c_base["PLAT"] = ""
@@ -494,8 +509,8 @@ if df_filtrado.empty:
                     df_c_base["COMENTARIOS"] = ""
                     df_c_base["GUARDADO"] = "NO"
 
-                    if not df_b_sub.empty:
-                        # Convertir ambas a string para evitar fallos de cruce
+                    # Cruce seguro sin posibilidad de error por columna faltante
+                    if not df_b_sub.empty and "CODIGO" in df_b_sub.columns:
                         df_c_base["CODIGO"] = df_c_base["CODIGO"].astype(str)
                         df_b_sub["CODIGO"] = df_b_sub["CODIGO"].astype(str)
 
@@ -559,7 +574,6 @@ st.markdown("<br/>", unsafe_allow_html=True)
 # CALLBACK: IMPACTA DIRECTO EN LA NUBE TRAS EDITAR
 # ---------------------------------------------------------
 def callback_guardar_ediciones():
-    """Toma la edición de la tabla y la sincroniza al instante con Google Sheets."""
     edits = st.session_state.get("editor_tabla", {}).get("edited_rows", {})
     if edits and "df_indices_filtrados" in st.session_state:
         indices_filtrados = st.session_state["df_indices_filtrados"]
