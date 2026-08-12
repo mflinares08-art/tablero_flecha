@@ -95,7 +95,7 @@ def cargar_pestana_flexible(nombre_buscado):
         if not data or len(data) < 1:
             return pd.DataFrame()
 
-        headers = [str(h).strip().upper() for h in data[0]]
+        headers = [str(h).strip() for h in data[0]]
 
         if len(data) == 1:
             return pd.DataFrame(columns=headers)
@@ -230,65 +230,38 @@ if not df_trabajo.empty:
 
 st.session_state["df_trabajo"] = df_trabajo
 
-# Mapeo a prueba de fallas para Base_Servicios
-df_b_sub = pd.DataFrame()
+# Mapeo exacto basado en la captura de tu Base_Servicios
+dict_base = {}
 if not df_base.empty:
-    df_b_clean = df_base.copy()
-    mapeo_cols = {}
+    # Buscar nombres de columnas ignorando mayúsculas/minúsculas
+    col_map = {c.lower().strip(): c for c in df_base.columns}
 
-    for col in df_b_clean.columns:
-        col_u = (
-            col.upper()
-            .replace("Ó", "O")
-            .replace("Í", "I")
-            .replace("Á", "A")
-            .replace("É", "E")
-            .strip()
-        )
-        if any(k in col_u for k in ["CODIGO", "COD", "SERVICIO"]):
-            mapeo_cols[col] = "CODIGO"
-        elif any(k in col_u for k in ["ORIGEN", "CABECERA", "DESDE"]):
-            mapeo_cols[col] = "CABECERA"
-        elif any(k in col_u for k in ["ANUNCIO", "DESTINO", "HACIA", "SE ANUNCIA"]):
-            mapeo_cols[col] = "ANUNCIO"
-        elif any(k in col_u for k in ["TRANSPORTISTA", "EMPRESA", "LINEA"]):
-            mapeo_cols[col] = "EMPRESA"
-        elif any(k in col_u for k in ["INTERNO", "COCHE", "UNIDAD"]):
-            mapeo_cols[col] = "INTERNO"
-        elif any(k in col_u for k in ["HORA", "SALIDA", "HORARIO"]):
-            mapeo_cols[col] = "HORARIO_RAW"
+    col_cod = col_map.get("codigo", df_base.columns[0])
+    col_salida = col_map.get("fecha salida", None)
+    col_origen = col_map.get("origen", None)
+    col_anuncio = col_map.get("se anuncia a", None)
+    col_empresa = col_map.get("codigo de transportista", None)
+    col_interno = col_map.get("interno", None)
 
-    df_b_clean = df_b_clean.rename(columns=mapeo_cols)
+    for _, row in df_base.iterrows():
+        cod_key = str(row[col_cod]).strip().upper()
+        if cod_key and cod_key != "NAN":
+            # Extraer HH:MM de la fecha de salida (ej: '2026/08/03 0:25:00' -> '00:25')
+            raw_salida = str(row[col_salida]) if col_salida else ""
+            match_h = re.search(r"(\d{1,2}):(\d{2})", raw_salida)
+            if match_h:
+                h, m = match_h.groups()
+                horario_fmt = f"{int(h):02d}:{m}"
+            else:
+                horario_fmt = ""
 
-    # Forzar que la primera columna sea CODIGO si el filtro no detectó el nombre
-    if "CODIGO" not in df_b_clean.columns and len(df_b_clean.columns) > 0:
-        col_primera = df_b_clean.columns[0]
-        df_b_clean = df_b_clean.rename(columns={col_primera: "CODIGO"})
-
-    if "CODIGO" in df_b_clean.columns:
-        if "HORARIO_RAW" in df_b_clean.columns:
-            df_b_clean["HORARIO_BASE"] = (
-                df_b_clean["HORARIO_RAW"]
-                .astype(str)
-                .apply(
-                    lambda x: re.search(r"\d{1,2}:\d{2}", x).group(0)
-                    if re.search(r"\d{1,2}:\d{2}", x)
-                    else x.strip()
-                )
-            )
-        else:
-            df_b_clean["HORARIO_BASE"] = ""
-
-        # Mapeo por posición ultra seguro
-        cols_b = ["CODIGO", "CABECERA", "HORARIO_BASE", "ANUNCIO", "EMPRESA", "INTERNO"]
-        cols_existentes = [c for c in cols_b if c in df_b_clean.columns]
-
-        df_b_sub = df_b_clean[cols_existentes].copy()
-        
-        # Generación de la clave sin riesgo de KeyError
-        col_ref_codigo = df_b_sub["CODIGO"] if "CODIGO" in df_b_sub.columns else df_b_sub.iloc[:, 0]
-        df_b_sub["CODIGO_KEY"] = col_ref_codigo.astype(str).str.strip().str.upper()
-        df_b_sub = df_b_sub.drop_duplicates(subset=["CODIGO_KEY"])
+            dict_base[cod_key] = {
+                "CABECERA": str(row[col_origen]).strip() if col_origen else "",
+                "HORARIO": horario_fmt,
+                "ANUNCIO": str(row[col_anuncio]).strip() if col_anuncio else "",
+                "EMPRESA": str(row[col_empresa]).strip() if col_empresa else "",
+                "INTERNO": str(row[col_interno]).strip() if col_interno else "",
+            }
 
 # ---------------------------------------------------------
 # INTERFAZ & ESTILOS
@@ -390,25 +363,22 @@ col_auto1, col_auto2 = st.sidebar.columns([1, 1])
 if col_auto1.button("🔍 Buscar Datos"):
     if not cod_ingresado.strip():
         st.sidebar.warning("Ingresá un código para buscar.")
-    elif not df_b_sub.empty and "CODIGO_KEY" in df_b_sub.columns:
+    else:
         key_search = cod_ingresado.strip().upper()
-        match = df_b_sub[df_b_sub["CODIGO_KEY"] == key_search]
-        if not match.empty:
-            row_m = match.iloc[0]
+        if key_search in dict_base:
+            info_b = dict_base[key_search]
             st.session_state["form_manual"] = {
                 "CODIGO": cod_ingresado.strip(),
-                "CABECERA": str(row_m.get("CABECERA", "")),
-                "HORARIO": str(row_m.get("HORARIO_BASE", "")),
-                "ANUNCIO": str(row_m.get("ANUNCIO", "")),
-                "EMPRESA": str(row_m.get("EMPRESA", "")),
-                "INTERNO": str(row_m.get("INTERNO", "")),
+                "CABECERA": info_b["CABECERA"],
+                "HORARIO": info_b["HORARIO"],
+                "ANUNCIO": info_b["ANUNCIO"],
+                "EMPRESA": info_b["EMPRESA"],
+                "INTERNO": info_b["INTERNO"],
             }
             st.sidebar.success("¡Datos encontrados!")
             st.rerun()
         else:
             st.sidebar.error("Código no encontrado en Base_Servicios.")
-    else:
-        st.sidebar.error("Base_Servicios está vacía.")
 
 with st.sidebar.form("form_nuevo_servicio"):
     f_cabecera = st.text_input(
@@ -511,42 +481,36 @@ if df_filtrado.empty:
             if df_codigos_sheet.empty:
                 st.error("❌ No se encontraron datos en la pestaña 'codigos'.")
             else:
-                col_cod = [c for c in df_codigos_sheet.columns if "CODIGO" in c.upper() or "CÓDIGO" in c.upper() or "COD" in c.upper()]
-                nombre_col_cod = col_cod[0] if col_cod else df_codigos_sheet.columns[0]
-
+                col_c = df_codigos_sheet.columns[0]
                 codigos_lista = (
-                    df_codigos_sheet[nombre_col_cod]
+                    df_codigos_sheet[col_c]
                     .astype(str)
                     .str.strip()
                     .dropna()
                     .unique()
                     .tolist()
                 )
-                codigos_lista = [c for c in codigos_lista if c != "" and c.upper() != "NONE" and c.upper() != "NAN"]
+                codigos_lista = [
+                    c for c in codigos_lista if c != "" and c.upper() != "NONE" and c.upper() != "NAN"
+                ]
 
                 if not codigos_lista:
                     st.warning("⚠️ No se encontraron códigos válidos en la pestaña 'codigos'.")
                 else:
                     nuevas_filas = []
 
-                    dict_base = {}
-                    if not df_b_sub.empty and "CODIGO_KEY" in df_b_sub.columns:
-                        for _, r in df_b_sub.iterrows():
-                            c_key = str(r["CODIGO_KEY"]).strip().upper()
-                            dict_base[c_key] = r.to_dict()
-
                     for c_code in codigos_lista:
-                        c_key_busqueda = str(c_code).strip().upper()
-                        info_base = dict_base.get(c_key_busqueda, {})
+                        c_key = str(c_code).strip().upper()
+                        info_base = dict_base.get(c_key, {})
 
                         f_item = {
                             "FECHA": fecha_sel_str,
                             "CODIGO": c_code,
-                            "CABECERA": str(info_base.get("CABECERA", "")),
-                            "HORARIO": str(info_base.get("HORARIO_BASE", "")),
-                            "ANUNCIO": str(info_base.get("ANUNCIO", "")),
-                            "EMPRESA": str(info_base.get("EMPRESA", "")),
-                            "INTERNO": str(info_base.get("INTERNO", "")),
+                            "CABECERA": info_base.get("CABECERA", ""),
+                            "HORARIO": info_base.get("HORARIO", ""),
+                            "ANUNCIO": info_base.get("ANUNCIO", ""),
+                            "EMPRESA": info_base.get("EMPRESA", ""),
+                            "INTERNO": info_base.get("INTERNO", ""),
                             "PLAT": "",
                             "PARTIO": "",
                             "DEMORA": 0,
