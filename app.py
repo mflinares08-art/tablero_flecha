@@ -64,7 +64,6 @@ def obtener_cliente_gspread():
 
 @st.cache_data(ttl=15)
 def cargar_pestana_flexible(nombre_buscado):
-    """Busca una pestaña sin importar mayúsculas/minúsculas/tildes."""
     try:
         gc = obtener_cliente_gspread()
         spreadsheet = gc.open_by_key(ID_SHEET)
@@ -109,7 +108,6 @@ def cargar_pestana_flexible(nombre_buscado):
 
 
 def guardar_todo_en_sheets(df_completo):
-    """Escribe los datos actualizados directo en la planilla e invalida caché local."""
     gc = obtener_cliente_gspread()
     spreadsheet = gc.open_by_key(ID_SHEET)
     
@@ -223,7 +221,6 @@ if not df_diario.empty:
 else:
     df_diario = pd.DataFrame(columns=cols_orden)
 
-# Cargar y ordenar datos sincronizados de Google Sheets
 df_trabajo = ordenar_por_horario(df_diario.copy())
 
 if not df_trabajo.empty:
@@ -233,12 +230,10 @@ if not df_trabajo.empty:
 
 st.session_state["df_trabajo"] = df_trabajo
 
-# Prepara Base Servicios de forma inteligente
+# Mapeo inteligente de Base_Servicios
 df_b_sub = pd.DataFrame()
 if not df_base.empty:
     df_b_clean = df_base.copy()
-    
-    # Mapeo universal de columnas posibles
     mapeo_cols = {}
     for col in df_b_clean.columns:
         col_u = col.upper().replace("Ó", "O").replace("Í", "I").strip()
@@ -252,7 +247,7 @@ if not df_base.empty:
             mapeo_cols[col] = "EMPRESA"
         elif "INTERNO" in col_u:
             mapeo_cols[col] = "INTERNO"
-        elif "FECHA SALIDA" in col_u or "HORARIO" in col_u:
+        elif "FECHA SALIDA" in col_u or "HORARIO" in col_u or "SALIDA" in col_u:
             mapeo_cols[col] = "HORARIO_RAW"
 
     df_b_clean = df_b_clean.rename(columns=mapeo_cols)
@@ -475,7 +470,7 @@ df_filtrado = (
     else pd.DataFrame(columns=cols_orden)
 )
 
-# Carga Automática inicial súper segura
+# Carga Automática inicial SIN pd.merge propenso a fallas
 if df_filtrado.empty:
     st.info(
         f"📅 No hay servicios inicializados para la fecha **{fecha_sel_str}**."
@@ -493,41 +488,49 @@ if df_filtrado.empty:
                 col_cod = [c for c in df_codigos_sheet.columns if "CODIGO" in c.upper() or "CÓDIGO" in c.upper()]
                 nombre_col_cod = col_cod[0] if col_cod else df_codigos_sheet.columns[0]
 
-                df_c_base = df_codigos_sheet[[nombre_col_cod]].copy()
-                df_c_base.columns = ["CODIGO"]
-                df_c_base["CODIGO"] = df_c_base["CODIGO"].astype(str).str.strip()
-                df_c_base = df_c_base[df_c_base["CODIGO"] != ""].drop_duplicates()
+                codigos_lista = (
+                    df_codigos_sheet[nombre_col_cod]
+                    .astype(str)
+                    .str.strip()
+                    .dropna()
+                    .unique()
+                    .tolist()
+                )
+                codigos_lista = [c for c in codigos_lista if c != ""]
 
-                if df_c_base.empty:
+                if not codigos_lista:
                     st.warning("⚠️ No se encontraron códigos válidos en la pestaña 'codigos'.")
                 else:
-                    df_c_base["FECHA"] = fecha_sel_str
-                    df_c_base["PLAT"] = ""
-                    df_c_base["PARTIO"] = ""
-                    df_c_base["DEMORA"] = 0
-                    df_c_base["ESTADO"] = "⏳ Pendiente"
-                    df_c_base["COMENTARIOS"] = ""
-                    df_c_base["GUARDADO"] = "NO"
-
-                    # Cruce seguro sin posibilidad de error por columna faltante
+                    nuevas_filas = []
+                    
+                    # Diccionario rápido de búsqueda si la base tiene datos
+                    dict_base = {}
                     if not df_b_sub.empty and "CODIGO" in df_b_sub.columns:
-                        df_c_base["CODIGO"] = df_c_base["CODIGO"].astype(str)
-                        df_b_sub["CODIGO"] = df_b_sub["CODIGO"].astype(str)
+                        for _, r in df_b_sub.iterrows():
+                            c_key = str(r["CODIGO"]).strip()
+                            dict_base[c_key] = r.to_dict()
 
-                        df_nueva_prog = pd.merge(
-                            df_c_base, df_b_sub, on="CODIGO", how="left"
-                        )
-                        if "HORARIO_BASE" in df_nueva_prog.columns:
-                            df_nueva_prog["HORARIO"] = df_nueva_prog["HORARIO_BASE"]
-                            df_nueva_prog = df_nueva_prog.drop(columns=["HORARIO_BASE"])
-                    else:
-                        df_nueva_prog = df_c_base
-                        df_nueva_prog["HORARIO"] = ""
+                    for c_code in codigos_lista:
+                        info_base = dict_base.get(c_code, {})
+                        
+                        f_item = {
+                            "FECHA": fecha_sel_str,
+                            "CODIGO": c_code,
+                            "CABECERA": str(info_base.get("CABECERA", "")),
+                            "HORARIO": str(info_base.get("HORARIO_BASE", "")),
+                            "ANUNCIO": str(info_base.get("ANUNCIO", "")),
+                            "EMPRESA": str(info_base.get("EMPRESA", "")),
+                            "INTERNO": str(info_base.get("INTERNO", "")),
+                            "PLAT": "",
+                            "PARTIO": "",
+                            "DEMORA": 0,
+                            "ESTADO": "⏳ Pendiente",
+                            "COMENTARIOS": "",
+                            "GUARDADO": "NO",
+                        }
+                        nuevas_filas.append(f_item)
 
-                    for c in cols_orden:
-                        if c not in df_nueva_prog.columns:
-                            df_nueva_prog[c] = ""
-                    df_nueva_prog = df_nueva_prog[cols_orden].fillna("")
+                    df_nueva_prog = pd.DataFrame(nuevas_filas)
 
                     df_mezclado = pd.concat([df_trabajo, df_nueva_prog], ignore_index=True)
                     df_mezclado = ordenar_por_horario(df_mezclado)
