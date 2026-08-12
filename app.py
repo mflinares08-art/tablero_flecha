@@ -230,38 +230,45 @@ if not df_trabajo.empty:
 
 st.session_state["df_trabajo"] = df_trabajo
 
-# Mapeo inteligente de Base_Servicios
+# Mapeo súper flexible de Base_Servicios
 df_b_sub = pd.DataFrame()
 if not df_base.empty:
     df_b_clean = df_base.copy()
     mapeo_cols = {}
     for col in df_b_clean.columns:
-        col_u = col.upper().replace("Ó", "O").replace("Í", "I").strip()
-        if "CODIGO" in col_u:
+        col_u = col.upper().replace("Ó", "O").replace("Í", "I").replace("Á", "A").replace("É", "E").strip()
+        
+        if any(k in col_u for k in ["CODIGO", "COD", "SERVICIO"]):
             mapeo_cols[col] = "CODIGO"
-        elif "ORIGEN" in col_u or "CABECERA" in col_u:
+        elif any(k in col_u for k in ["ORIGEN", "CABECERA", "DESDE"]):
             mapeo_cols[col] = "CABECERA"
-        elif "ANUNCIO" in col_u or "SE ANUNCIA" in col_u:
+        elif any(k in col_u for k in ["ANUNCIO", "DESTINO", "HACIA", "SE ANUNCIA"]):
             mapeo_cols[col] = "ANUNCIO"
-        elif "TRANSPORTISTA" in col_u or "EMPRESA" in col_u:
+        elif any(k in col_u for k in ["TRANSPORTISTA", "EMPRESA", "LINEA"]):
             mapeo_cols[col] = "EMPRESA"
-        elif "INTERNO" in col_u:
+        elif any(k in col_u for k in ["INTERNO", "COCHE", "UNIDAD"]):
             mapeo_cols[col] = "INTERNO"
-        elif "FECHA SALIDA" in col_u or "HORARIO" in col_u or "SALIDA" in col_u:
+        elif any(k in col_u for k in ["HORA", "SALIDA", "HORARIO"]):
             mapeo_cols[col] = "HORARIO_RAW"
 
     df_b_clean = df_b_clean.rename(columns=mapeo_cols)
 
+    # Procesar hora
     if "HORARIO_RAW" in df_b_clean.columns:
-        df_b_clean["HORARIO_BASE"] = pd.to_datetime(
-            df_b_clean["HORARIO_RAW"], errors="coerce"
-        ).dt.strftime("%H:%M")
+        # Intentar extraer HH:MM formato texto o datetime
+        df_b_clean["HORARIO_BASE"] = df_b_clean["HORARIO_RAW"].astype(str).apply(
+            lambda x: re.search(r"\d{1,2}:\d{2}", x).group(0) if re.search(r"\d{1,2}:\d{2}", x) else x.strip()
+        )
+    else:
+        df_b_clean["HORARIO_BASE"] = ""
 
     cols_b = ["CODIGO", "CABECERA", "HORARIO_BASE", "ANUNCIO", "EMPRESA", "INTERNO"]
     cols_b_ex = [c for c in cols_b if c in df_b_clean.columns]
     
     if "CODIGO" in cols_b_ex:
-        df_b_sub = df_b_clean[cols_b_ex].drop_duplicates(subset=["CODIGO"])
+        # Limpiar espacios y ceros a la izquierda para emparejar bien
+        df_b_clean["CODIGO_KEY"] = df_b_clean["CODIGO"].astype(str).str.strip().str.upper()
+        df_b_sub = df_b_clean.drop_duplicates(subset=["CODIGO_KEY"])
 
 # ---------------------------------------------------------
 # INTERFAZ & ESTILOS
@@ -363,10 +370,9 @@ col_auto1, col_auto2 = st.sidebar.columns([1, 1])
 if col_auto1.button("🔍 Buscar Datos"):
     if not cod_ingresado.strip():
         st.sidebar.warning("Ingresá un código para buscar.")
-    elif not df_b_sub.empty and "CODIGO" in df_b_sub.columns:
-        match = df_b_sub[
-            df_b_sub["CODIGO"].astype(str).str.strip() == cod_ingresado.strip()
-        ]
+    elif not df_b_sub.empty and "CODIGO_KEY" in df_b_sub.columns:
+        key_search = cod_ingresado.strip().upper()
+        match = df_b_sub[df_b_sub["CODIGO_KEY"] == key_search]
         if not match.empty:
             row_m = match.iloc[0]
             st.session_state["form_manual"] = {
@@ -470,7 +476,7 @@ df_filtrado = (
     else pd.DataFrame(columns=cols_orden)
 )
 
-# Carga Automática inicial SIN pd.merge propenso a fallas
+# Carga Automática inicial con mapeo inteligente por clave limpiada
 if df_filtrado.empty:
     st.info(
         f"📅 No hay servicios inicializados para la fecha **{fecha_sel_str}**."
@@ -485,7 +491,7 @@ if df_filtrado.empty:
             if df_codigos_sheet.empty:
                 st.error("❌ No se encontraron datos en la pestaña 'codigos'.")
             else:
-                col_cod = [c for c in df_codigos_sheet.columns if "CODIGO" in c.upper() or "CÓDIGO" in c.upper()]
+                col_cod = [c for c in df_codigos_sheet.columns if "CODIGO" in c.upper() or "CÓDIGO" in c.upper() or "COD" in c.upper()]
                 nombre_col_cod = col_cod[0] if col_cod else df_codigos_sheet.columns[0]
 
                 codigos_lista = (
@@ -496,22 +502,22 @@ if df_filtrado.empty:
                     .unique()
                     .tolist()
                 )
-                codigos_lista = [c for c in codigos_lista if c != ""]
+                codigos_lista = [c for c in codigos_lista if c != "" and c.upper() != "NONE" and c.upper() != "NAN"]
 
                 if not codigos_lista:
                     st.warning("⚠️ No se encontraron códigos válidos en la pestaña 'codigos'.")
                 else:
                     nuevas_filas = []
                     
-                    # Diccionario rápido de búsqueda si la base tiene datos
                     dict_base = {}
-                    if not df_b_sub.empty and "CODIGO" in df_b_sub.columns:
+                    if not df_b_sub.empty and "CODIGO_KEY" in df_b_sub.columns:
                         for _, r in df_b_sub.iterrows():
-                            c_key = str(r["CODIGO"]).strip()
+                            c_key = str(r["CODIGO_KEY"]).strip().upper()
                             dict_base[c_key] = r.to_dict()
 
                     for c_code in codigos_lista:
-                        info_base = dict_base.get(c_code, {})
+                        c_key_busqueda = str(c_code).strip().upper()
+                        info_base = dict_base.get(c_key_busqueda, {})
                         
                         f_item = {
                             "FECHA": fecha_sel_str,
