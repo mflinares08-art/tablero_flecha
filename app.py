@@ -110,7 +110,7 @@ def cargar_pestana_flexible(nombre_buscado):
 def guardar_todo_en_sheets(df_completo):
     gc = obtener_cliente_gspread()
     spreadsheet = gc.open_by_key(ID_SHEET)
-    
+
     sh = None
     for w in spreadsheet.worksheets():
         if "plantilla" in w.title.lower() or "partida" in w.title.lower():
@@ -230,15 +230,21 @@ if not df_trabajo.empty:
 
 st.session_state["df_trabajo"] = df_trabajo
 
-# Mapeo blindado de Base_Servicios (a prueba de fallas)
+# Mapeo blindado de Base_Servicios (NUNCA FALLA)
 df_b_sub = pd.DataFrame()
 if not df_base.empty:
     df_b_clean = df_base.copy()
     mapeo_cols = {}
-    
-    # Mapear columnas según palabras clave
+
     for col in df_b_clean.columns:
-        col_u = col.upper().replace("Ó", "O").replace("Í", "I").replace("Á", "A").replace("É", "E").strip()
+        col_u = (
+            col.upper()
+            .replace("Ó", "O")
+            .replace("Í", "I")
+            .replace("Á", "A")
+            .replace("É", "E")
+            .strip()
+        )
         if any(k in col_u for k in ["CODIGO", "COD", "SERVICIO"]):
             mapeo_cols[col] = "CODIGO"
         elif any(k in col_u for k in ["ORIGEN", "CABECERA", "DESDE"]):
@@ -254,24 +260,33 @@ if not df_base.empty:
 
     df_b_clean = df_b_clean.rename(columns=mapeo_cols)
 
-    # Si no se encontró ninguna columna llamada 'CODIGO', usar la primera columna de la base
+    # Si por algún motivo no reconoció el nombre 'CODIGO', agarra la primera columna que exista
     if "CODIGO" not in df_b_clean.columns and len(df_b_clean.columns) > 0:
-        df_b_clean = df_b_clean.rename(columns={df_b_clean.columns[0]: "CODIGO"})
+        df_b_clean.columns.values[0] = "CODIGO"
 
     if "CODIGO" in df_b_clean.columns:
-        # Procesar hora de salida
         if "HORARIO_RAW" in df_b_clean.columns:
-            df_b_clean["HORARIO_BASE"] = df_b_clean["HORARIO_RAW"].astype(str).apply(
-                lambda x: re.search(r"\d{1,2}:\d{2}", x).group(0) if re.search(r"\d{1,2}:\d{2}", x) else x.strip()
+            df_b_clean["HORARIO_BASE"] = (
+                df_b_clean["HORARIO_RAW"]
+                .astype(str)
+                .apply(
+                    lambda x: re.search(r"\d{1,2}:\d{2}", x).group(0)
+                    if re.search(r"\d{1,2}:\d{2}", x)
+                    else x.strip()
+                )
             )
         else:
             df_b_clean["HORARIO_BASE"] = ""
 
+        # Súper seguro: verificación 'in' previa para evitar KeyError / AttributeError
         cols_b = ["CODIGO", "CABECERA", "HORARIO_BASE", "ANUNCIO", "EMPRESA", "INTERNO"]
-        cols_b_ex = [c for c in cols_b if c in df_b_clean.columns]
-        
-        df_b_clean["CODIGO_KEY"] = df_b_clean["CODIGO"].astype(str).str.strip().str.upper()
-        df_b_sub = df_b_clean.drop_duplicates(subset=["CODIGO_KEY"])
+        cols_existentes = [c for c in cols_b if c in df_b_clean.columns]
+
+        df_b_sub = df_b_clean[cols_existentes].copy()
+        df_b_sub["CODIGO_KEY"] = (
+            df_b_sub["CODIGO"].astype(str).str.strip().str.upper()
+        )
+        df_b_sub = df_b_sub.drop_duplicates(subset=["CODIGO_KEY"])
 
 # ---------------------------------------------------------
 # INTERFAZ & ESTILOS
@@ -511,7 +526,7 @@ if df_filtrado.empty:
                     st.warning("⚠️ No se encontraron códigos válidos en la pestaña 'codigos'.")
                 else:
                     nuevas_filas = []
-                    
+
                     dict_base = {}
                     if not df_b_sub.empty and "CODIGO_KEY" in df_b_sub.columns:
                         for _, r in df_b_sub.iterrows():
@@ -521,7 +536,7 @@ if df_filtrado.empty:
                     for c_code in codigos_lista:
                         c_key_busqueda = str(c_code).strip().upper()
                         info_base = dict_base.get(c_key_busqueda, {})
-                        
+
                         f_item = {
                             "FECHA": fecha_sel_str,
                             "CODIGO": c_code,
