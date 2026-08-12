@@ -230,7 +230,7 @@ if not df_trabajo.empty:
 
 st.session_state["df_trabajo"] = df_trabajo
 
-# Mapeo blindado de Base_Servicios (NUNCA FALLA)
+# Mapeo a prueba de fallas para Base_Servicios
 df_b_sub = pd.DataFrame()
 if not df_base.empty:
     df_b_clean = df_base.copy()
@@ -260,9 +260,10 @@ if not df_base.empty:
 
     df_b_clean = df_b_clean.rename(columns=mapeo_cols)
 
-    # Si por algún motivo no reconoció el nombre 'CODIGO', agarra la primera columna que exista
+    # Forzar que la primera columna sea CODIGO si el filtro no detectó el nombre
     if "CODIGO" not in df_b_clean.columns and len(df_b_clean.columns) > 0:
-        df_b_clean.columns.values[0] = "CODIGO"
+        col_primera = df_b_clean.columns[0]
+        df_b_clean = df_b_clean.rename(columns={col_primera: "CODIGO"})
 
     if "CODIGO" in df_b_clean.columns:
         if "HORARIO_RAW" in df_b_clean.columns:
@@ -278,14 +279,15 @@ if not df_base.empty:
         else:
             df_b_clean["HORARIO_BASE"] = ""
 
-        # Súper seguro: verificación 'in' previa para evitar KeyError / AttributeError
+        # Mapeo por posición ultra seguro
         cols_b = ["CODIGO", "CABECERA", "HORARIO_BASE", "ANUNCIO", "EMPRESA", "INTERNO"]
         cols_existentes = [c for c in cols_b if c in df_b_clean.columns]
 
         df_b_sub = df_b_clean[cols_existentes].copy()
-        df_b_sub["CODIGO_KEY"] = (
-            df_b_sub["CODIGO"].astype(str).str.strip().str.upper()
-        )
+        
+        # Generación de la clave sin riesgo de KeyError
+        col_ref_codigo = df_b_sub["CODIGO"] if "CODIGO" in df_b_sub.columns else df_b_sub.iloc[:, 0]
+        df_b_sub["CODIGO_KEY"] = col_ref_codigo.astype(str).str.strip().str.upper()
         df_b_sub = df_b_sub.drop_duplicates(subset=["CODIGO_KEY"])
 
 # ---------------------------------------------------------
