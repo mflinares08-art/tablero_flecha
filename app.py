@@ -230,14 +230,15 @@ if not df_trabajo.empty:
 
 st.session_state["df_trabajo"] = df_trabajo
 
-# Mapeo súper flexible de Base_Servicios
+# Mapeo blindado de Base_Servicios (a prueba de fallas)
 df_b_sub = pd.DataFrame()
 if not df_base.empty:
     df_b_clean = df_base.copy()
     mapeo_cols = {}
+    
+    # Mapear columnas según palabras clave
     for col in df_b_clean.columns:
         col_u = col.upper().replace("Ó", "O").replace("Í", "I").replace("Á", "A").replace("É", "E").strip()
-        
         if any(k in col_u for k in ["CODIGO", "COD", "SERVICIO"]):
             mapeo_cols[col] = "CODIGO"
         elif any(k in col_u for k in ["ORIGEN", "CABECERA", "DESDE"]):
@@ -253,20 +254,22 @@ if not df_base.empty:
 
     df_b_clean = df_b_clean.rename(columns=mapeo_cols)
 
-    # Procesar hora
-    if "HORARIO_RAW" in df_b_clean.columns:
-        # Intentar extraer HH:MM formato texto o datetime
-        df_b_clean["HORARIO_BASE"] = df_b_clean["HORARIO_RAW"].astype(str).apply(
-            lambda x: re.search(r"\d{1,2}:\d{2}", x).group(0) if re.search(r"\d{1,2}:\d{2}", x) else x.strip()
-        )
-    else:
-        df_b_clean["HORARIO_BASE"] = ""
+    # Si no se encontró ninguna columna llamada 'CODIGO', usar la primera columna de la base
+    if "CODIGO" not in df_b_clean.columns and len(df_b_clean.columns) > 0:
+        df_b_clean = df_b_clean.rename(columns={df_b_clean.columns[0]: "CODIGO"})
 
-    cols_b = ["CODIGO", "CABECERA", "HORARIO_BASE", "ANUNCIO", "EMPRESA", "INTERNO"]
-    cols_b_ex = [c for c in cols_b if c in df_b_clean.columns]
-    
-    if "CODIGO" in cols_b_ex:
-        # Limpiar espacios y ceros a la izquierda para emparejar bien
+    if "CODIGO" in df_b_clean.columns:
+        # Procesar hora de salida
+        if "HORARIO_RAW" in df_b_clean.columns:
+            df_b_clean["HORARIO_BASE"] = df_b_clean["HORARIO_RAW"].astype(str).apply(
+                lambda x: re.search(r"\d{1,2}:\d{2}", x).group(0) if re.search(r"\d{1,2}:\d{2}", x) else x.strip()
+            )
+        else:
+            df_b_clean["HORARIO_BASE"] = ""
+
+        cols_b = ["CODIGO", "CABECERA", "HORARIO_BASE", "ANUNCIO", "EMPRESA", "INTERNO"]
+        cols_b_ex = [c for c in cols_b if c in df_b_clean.columns]
+        
         df_b_clean["CODIGO_KEY"] = df_b_clean["CODIGO"].astype(str).str.strip().str.upper()
         df_b_sub = df_b_clean.drop_duplicates(subset=["CODIGO_KEY"])
 
@@ -388,7 +391,7 @@ if col_auto1.button("🔍 Buscar Datos"):
         else:
             st.sidebar.error("Código no encontrado en Base_Servicios.")
     else:
-        st.sidebar.error("Base_Servicios está vacía o sin columna CODIGO.")
+        st.sidebar.error("Base_Servicios está vacía.")
 
 with st.sidebar.form("form_nuevo_servicio"):
     f_cabecera = st.text_input(
@@ -476,7 +479,7 @@ df_filtrado = (
     else pd.DataFrame(columns=cols_orden)
 )
 
-# Carga Automática inicial con mapeo inteligente por clave limpiada
+# Carga Automática inicial
 if df_filtrado.empty:
     st.info(
         f"📅 No hay servicios inicializados para la fecha **{fecha_sel_str}**."
