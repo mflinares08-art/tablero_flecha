@@ -44,7 +44,7 @@ cols_orden = [
 
 
 # ---------------------------------------------------------
-# CONEXIÓN Y CARGA DE GOOGLE SHEETS
+# CONEXIÓN Y FUNCIONES DE GOOGLE SHEETS
 # ---------------------------------------------------------
 def obtener_cliente_gspread():
     if "gcp_service_account" not in st.secrets:
@@ -62,8 +62,8 @@ def obtener_cliente_gspread():
     return gspread.authorize(credentials)
 
 
-# Caché de 10 segundos
-@st.cache_data(ttl=10)
+# TTL de 5 segundos para sincronización rápida entre dispositivos
+@st.cache_data(ttl=5)
 def cargar_pestana(nombre_o_index):
     try:
         gc = obtener_cliente_gspread()
@@ -76,12 +76,42 @@ def cargar_pestana(nombre_o_index):
 
         data = sheet.get_all_values()
         if not data or len(data) < 2:
-            return pd.DataFrame()
+            return pd.DataFrame(columns=cols_orden)
 
         headers = [str(h).strip() for h in data[0]]
-        return pd.DataFrame(data[1:], columns=headers)
+        df = pd.DataFrame(data[1:], columns=headers)
+
+        # Normalizar columnas a mayúsculas para evitar desfasajes
+        df.columns = df.columns.str.upper()
+
+        for col in cols_orden:
+            if col not in df.columns:
+                df[col] = ""
+        return df[cols_orden].copy()
     except Exception:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=cols_orden)
+
+
+def guardar_todo_en_sheets(df_completo):
+    """Escribe los datos actualizados directo en la planilla e invalida caché local."""
+    gc = obtener_cliente_gspread()
+    sh = gc.open_by_key(ID_SHEET).worksheet("plantilla_partidas")
+
+    df_a_enviar = df_completo.copy().fillna("")
+    df_a_enviar["CABECERA"] = (
+        df_a_enviar["CABECERA"].astype(str).str.replace("🟡", "").str.strip()
+    )
+
+    if "MENSAJE WA" in df_a_enviar.columns:
+        df_a_enviar = df_a_enviar.drop(columns=["MENSAJE WA"])
+
+    matriz_datos = [
+        df_a_enviar.columns.tolist()
+    ] + df_a_enviar.astype(str).values.tolist()
+
+    sh.clear()
+    sh.update(range_name="A1", values=matriz_datos)
+    st.cache_data.clear()
 
 
 def parsear_hora(texto_hora):
@@ -150,7 +180,7 @@ def armar_mensaje_despacho(row):
 
 
 # ---------------------------------------------------------
-# CARGA Y PREPARACIÓN DE DATOS
+# CARGA DE DATOS DESDE SHEETS
 # ---------------------------------------------------------
 try:
     df_diario = cargar_pestana("plantilla_partidas")
@@ -160,28 +190,22 @@ except Exception as e:
     st.error(f"❌ Error al conectar con Google Sheets: {e}")
     st.stop()
 
-if not df_diario.empty:
-    df_diario.columns = df_diario.columns.str.upper()
-    for col in cols_orden:
-        if col not in df_diario.columns:
-            df_diario[col] = ""
-    df_diario = df_diario[cols_orden].copy()
-else:
-    df_diario = pd.DataFrame(columns=cols_orden)
+# Cargar y ordenar datos sincronizados de Google Sheets
+df_trabajo = ordenar_por_horario(df_diario.copy())
 
-if "df_trabajo" not in st.session_state:
-    st.session_state["df_trabajo"] = ordenar_por_horario(df_diario.copy())
+if not df_trabajo.empty:
+    df_trabajo[["DEMORA", "ESTADO"]] = df_trabajo.apply(
+        calcular_demora_y_estado, axis=1
+    )
 
-# Recalcular demoras
-if not st.session_state["df_trabajo"].empty:
-    st.session_state["df_trabajo"][["DEMORA", "ESTADO"]] = st.session_state[
-        "df_trabajo"
-    ].apply(calcular_demora_y_estado, axis=1)
+st.session_state["df_trabajo"] = df_trabajo
 
+# Base Servicios
 df_b_sub = pd.DataFrame()
 if not df_base.empty:
     renombres_base = {
         "Código": "CODIGO",
+        "CÓDIGO": "CODIGO",
         "Origen": "CABECERA",
         "Se anuncia a": "ANUNCIO",
         "Código de transportista": "EMPRESA",
@@ -222,24 +246,21 @@ st.title("🌐 Tablero en Vivo - Grupo Flecha")
 st.markdown("---")
 
 # ---------------------------------------------------------
-# FILTROS LATERALES Y BOTÓN DE SINCRONIZACIÓN SEGURO
+# FILTROS LATERALES Y OPCIONES
 # ---------------------------------------------------------
 st.sidebar.header("🔍 Filtros & Opciones")
 
 if st.sidebar.button("🔄 Actualizar / Sincronizar", use_container_width=True):
     st.cache_data.clear()
-    # Traemos los datos más recientes de Sheets pero conservamos lo que hay en memoria si ya fue modificado
-    df_nuevo_sheet = cargar_pestana("plantilla_partidas")
-    if not df_nuevo_sheet.empty:
-        df_nuevo_sheet.columns = df_nuevo_sheet.columns.str.upper()
-        for col in cols_orden:
-            if col not in df_nuevo_sheet.columns:
-                df_nuevo_sheet[col] = ""
-        df_nuevo_sheet = df_nuevo_sheet[cols_orden].copy()
-        
-        # Si la planilla tiene registros, los sincronizamos ordenados
-        st.session_state["df_trabajo"] = ordenar_por_horario(df_nuevo_sheet)
     st.success("¡Sincronizado con Google Sheets!")
+    st.rerun()
+
+# Auto-refresco ideal para pantallas/tablets
+auto_refresco = st.sidebar.checkbox("📡 Auto-actualizar cada 30 seg", value=False)
+if auto_refresco:
+    import time
+    time.sleep(30)
+    st.cache_data.clear()
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -307,8 +328,7 @@ if col_auto1.button("🔍 Buscar Datos"):
         st.sidebar.warning("Ingresá un código para buscar.")
     elif not df_b_sub.empty:
         match = df_b_sub[
-            df_b_sub["CODIGO"].astype(str).str.strip()
-            == cod_ingresado.strip()
+            df_b_sub["CODIGO"].astype(str).str.strip() == cod_ingresado.strip()
         ]
         if not match.empty:
             row_m = match.iloc[0]
@@ -370,10 +390,11 @@ with st.sidebar.form("form_nuevo_servicio"):
             }
 
             df_actualizado = pd.concat(
-                [st.session_state["df_trabajo"], pd.DataFrame([nueva_fila])],
+                [df_trabajo, pd.DataFrame([nueva_fila])],
                 ignore_index=True,
             )
-            st.session_state["df_trabajo"] = ordenar_por_horario(df_actualizado)
+            df_actualizado = ordenar_por_horario(df_actualizado)
+            guardar_todo_en_sheets(df_actualizado)
 
             st.session_state["form_manual"] = {
                 "CODIGO": "",
@@ -470,7 +491,9 @@ if df_filtrado.empty:
                     [st.session_state["df_trabajo"], df_nueva_prog],
                     ignore_index=True,
                 )
-                st.session_state["df_trabajo"] = ordenar_por_horario(df_mezclado)
+                df_mezclado = ordenar_por_horario(df_mezclado)
+
+                guardar_todo_en_sheets(df_mezclado)
 
                 st.success(f"🎉 ¡Día {fecha_sel_str} cargado!")
                 st.rerun()
@@ -518,6 +541,9 @@ def callback_guardar_ediciones():
     if edits and "df_indices_filtrados" in st.session_state:
         indices_filtrados = st.session_state["df_indices_filtrados"]
         hubo_cambio = False
+
+        df_temp = st.session_state["df_trabajo"].copy()
+
         for pos_str, cambios in edits.items():
             pos_int = int(pos_str)
             if pos_int < len(indices_filtrados):
@@ -525,19 +551,15 @@ def callback_guardar_ediciones():
                 for campo, val in cambios.items():
                     if campo != "MENSAJE WA":
                         val_limpio = str(val).replace("🟡", "").strip()
-                        st.session_state["df_trabajo"].at[idx_real, campo] = val_limpio
+                        df_temp.at[idx_real, campo] = val_limpio
                         hubo_cambio = True
 
         if hubo_cambio:
-            # Recalcular demoras
-            st.session_state["df_trabajo"][["DEMORA", "ESTADO"]] = st.session_state[
-                "df_trabajo"
-            ].apply(calcular_demora_y_estado, axis=1)
-            
-            # Reordenar por HORARIO
-            st.session_state["df_trabajo"] = ordenar_por_horario(
-                st.session_state["df_trabajo"]
+            df_temp[["DEMORA", "ESTADO"]] = df_temp.apply(
+                calcular_demora_y_estado, axis=1
             )
+            df_temp = ordenar_por_horario(df_temp)
+            guardar_todo_en_sheets(df_temp)
 
 
 # ---------------------------------------------------------
@@ -567,7 +589,7 @@ def aplicar_colores(row):
         return ["background-color: rgba(245, 158, 11, 0.22); color: #fde047;"] * len(row)
     elif estado == "🟢 En Horario":
         return ["background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"] * len(row)
-    
+
     return [""] * len(row)
 
 
@@ -638,35 +660,17 @@ if st.button(
     use_container_width=True,
 ):
     try:
-        gc = obtener_cliente_gspread()
-        sh = gc.open_by_key(ID_SHEET).worksheet("plantilla_partidas")
-
         mask_guardar = (
             st.session_state["df_trabajo"]["FECHA"].astype(str) == fecha_sel_str
         )
         st.session_state["df_trabajo"].loc[mask_guardar, "GUARDADO"] = "SI"
 
-        st.session_state["df_trabajo"] = ordenar_por_horario(
-            st.session_state["df_trabajo"]
-        )
-
-        df_a_enviar = st.session_state["df_trabajo"].copy().fillna("")
-        df_a_enviar["CABECERA"] = df_a_enviar["CABECERA"].astype(str).str.replace("🟡", "").str.strip()
-
-        if "MENSAJE WA" in df_a_enviar.columns:
-            df_a_enviar = df_a_enviar.drop(columns=["MENSAJE WA"])
-
-        matriz_datos = [
-            df_a_enviar.columns.tolist()
-        ] + df_a_enviar.astype(str).values.tolist()
-
-        sh.clear()
-        sh.update(range_name="A1", values=matriz_datos)
+        df_ordenado = ordenar_por_horario(st.session_state["df_trabajo"])
+        guardar_todo_en_sheets(df_ordenado)
 
         st.success(
             f"✅ ¡Cambios del {fecha_sel_str} guardados correctamente en Google Sheets!"
         )
-        st.cache_data.clear()
         st.rerun()
     except Exception as err:
         st.error(f"❌ Error al guardar en Google Sheets: {err}")
