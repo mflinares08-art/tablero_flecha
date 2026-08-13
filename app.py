@@ -230,23 +230,25 @@ if not df_trabajo.empty:
 
 st.session_state["df_trabajo"] = df_trabajo
 
-# Mapeo exacto basado en la captura de tu Base_Servicios
+# Mapeo de Base_Servicios asignando la Columna R ('Código de transportista')
 dict_base = {}
 if not df_base.empty:
-    # Buscar nombres de columnas ignorando mayúsculas/minúsculas
     col_map = {c.lower().strip(): c for c in df_base.columns}
 
     col_cod = col_map.get("codigo", df_base.columns[0])
     col_salida = col_map.get("fecha salida", None)
     col_origen = col_map.get("origen", None)
     col_anuncio = col_map.get("se anuncia a", None)
-    col_empresa = col_map.get("codigo de transportista", None)
     col_interno = col_map.get("interno", None)
+
+    # Buscar 'Código de transportista' (Columna R - posición 17)
+    col_empresa = col_map.get("codigo de transportista", None)
+    if not col_empresa and len(df_base.columns) > 17:
+        col_empresa = df_base.columns[17]  # Columna R
 
     for _, row in df_base.iterrows():
         cod_key = str(row[col_cod]).strip().upper()
         if cod_key and cod_key != "NAN":
-            # Extraer HH:MM de la fecha de salida (ej: '2026/08/03 0:25:00' -> '00:25')
             raw_salida = str(row[col_salida]) if col_salida else ""
             match_h = re.search(r"(\d{1,2}):(\d{2})", raw_salida)
             if match_h:
