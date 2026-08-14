@@ -5,7 +5,6 @@ import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 # Zona Horaria de Argentina
 TZ_ARG = zoneinfo.ZoneInfo("America/Argentina/Buenos_Aires")
@@ -18,37 +17,6 @@ st.set_page_config(
     page_icon="🚌",
     layout="wide",
     initial_sidebar_state="expanded",
-)
-
-# ---------------------------------------------------------
-# MANTENER POSICIÓN DEL SCROLL TRAS RE-RUN
-# ---------------------------------------------------------
-components.html(
-    """
-    <script>
-    // Guardar la posición del scroll antes de un evento de recarga
-    window.addEventListener('beforeunload', function() {
-        sessionStorage.setItem('scrollPosition', window.parent.scrollY);
-    });
-
-    // Restaurar la posición del scroll al cargar la página
-    window.addEventListener('load', function() {
-        var scrollPosition = sessionStorage.getItem('scrollPosition');
-        if (scrollPosition) {
-            window.parent.scrollTo(0, parseInt(scrollPosition));
-        }
-    });
-
-    // Observador continuo para asegurar el scroll en Streamlit
-    setTimeout(function() {
-        var scrollPosition = sessionStorage.getItem('scrollPosition');
-        if (scrollPosition) {
-            window.parent.scrollTo(0, parseInt(scrollPosition));
-        }
-    }, 300);
-    </script>
-    """,
-    height=0,
 )
 
 SCOPES = [
@@ -262,7 +230,7 @@ if not df_trabajo.empty:
 
 st.session_state["df_trabajo"] = df_trabajo
 
-# Mapeo de Base_Servicios asignando la Columna R ('Código de transportista')
+# Mapeo de Base_Servicios
 dict_base = {}
 if not df_base.empty:
     col_map = {c.lower().strip(): c for c in df_base.columns}
@@ -327,15 +295,6 @@ st.sidebar.header("🔍 Filtros & Opciones")
 if st.sidebar.button("🔄 Refrescar Nube", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
-
-auto_refresco = st.sidebar.checkbox("📡 Auto-actualizar cada 30 seg", value=False)
-if auto_refresco:
-    import time
-    time.sleep(30)
-    st.cache_data.clear()
-    st.rerun()
-
-st.sidebar.markdown("---")
 
 fecha_hoy = datetime.now(TZ_ARG).date()
 if "fecha_seleccionada" not in st.session_state:
@@ -596,122 +555,122 @@ col4.metric(
 
 st.markdown("<br/>", unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# CALLBACK: IMPACTA DIRECTO EN LA NUBE TRAS EDITAR
-# ---------------------------------------------------------
-def callback_guardar_ediciones():
-    edits = st.session_state.get("editor_tabla", {}).get("edited_rows", {})
-    if edits and "df_indices_filtrados" in st.session_state:
-        indices_filtrados = st.session_state["df_indices_filtrados"]
-        hubo_cambio = False
-
-        df_temp = st.session_state["df_trabajo"].copy()
-
-        for pos_str, cambios in edits.items():
-            pos_int = int(pos_str)
-            if pos_int < len(indices_filtrados):
-                idx_real = indices_filtrados[pos_int]
-                for campo, val in cambios.items():
-                    if campo != "MENSAJE WA":
-                        val_limpio = str(val).replace("🟡", "").strip()
-                        df_temp.at[idx_real, campo] = val_limpio
-                        hubo_cambio = True
-
-        if hubo_cambio:
-            df_temp[["DEMORA", "ESTADO"]] = df_temp.apply(
-                calcular_demora_y_estado, axis=1
-            )
-            df_temp = ordenar_por_horario(df_temp)
-            guardar_todo_en_sheets(df_temp)
-
 
 # ---------------------------------------------------------
-# TABLA INTERACTIVA DE DATOS
+# FRAGMENTO DE TABLA (EVITA RE-RUN COMPLETO Y MANTIENE SCROLL)
 # ---------------------------------------------------------
-col_sub, col_btn = st.columns([3, 1])
-with col_sub:
-    st.subheader(f"📡 Despachos del día: {fecha_sel_str}")
+@st.fragment
+def renderizar_tabla_interactiva(df_sub_filtrado):
+    col_sub, col_btn = st.columns([3, 1])
+    with col_sub:
+        st.subheader(f"📡 Despachos del día: {fecha_sel_str}")
 
-with col_btn:
-    csv = df_filtrado.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "📥 Exportar CSV",
-        data=csv,
-        file_name=f"tablero_flecha_{fecha_sel_str}.csv",
-        mime="text/csv",
-    )
-
-
-def aplicar_colores(row):
-    estado = str(row.get("ESTADO", ""))
-    cabecera = str(row.get("CABECERA", "")).replace("🟡", "").strip().upper()
-
-    if estado == "🔴 Demorado":
-        return ["background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"] * len(row)
-    elif cabecera != "RET" and cabecera != "":
-        return ["background-color: rgba(245, 158, 11, 0.22); color: #fde047;"] * len(row)
-    elif estado == "🟢 En Horario":
-        return ["background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"] * len(row)
-
-    return [""] * len(row)
-
-
-if not df_filtrado.empty:
-    st.session_state["df_indices_filtrados"] = df_filtrado.index.tolist()
-
-    cols_disabled = ["DEMORA", "ESTADO"]
-
-    df_vista = df_filtrado.copy()
-
-    def agregar_emoji_cabecera(val):
-        str_val = str(val).replace("🟡", "").strip()
-        if str_val.upper() != "RET" and str_val != "":
-            return f"🟡 {str_val}"
-        return str_val
-
-    df_vista["CABECERA"] = df_vista["CABECERA"].apply(agregar_emoji_cabecera)
-    df_vista["MENSAJE WA"] = df_filtrado.apply(armar_mensaje_despacho, axis=1)
-
-    es_guardado_dia = (
-        df_filtrado["GUARDADO"].astype(str).str.upper().eq("SI").all()
-    )
-    if es_guardado_dia:
-        cols_disabled.extend(
-            [
-                "FECHA",
-                "CODIGO",
-                "CABECERA",
-                "HORARIO",
-                "ANUNCIO",
-                "EMPRESA",
-                "GUARDADO",
-            ]
+    with col_btn:
+        csv = df_sub_filtrado.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Exportar CSV",
+            data=csv,
+            file_name=f"tablero_flecha_{fecha_sel_str}.csv",
+            mime="text/csv",
         )
 
-    df_estilizado = df_vista.style.apply(aplicar_colores, axis=1)
+    def aplicar_colores(row):
+        estado = str(row.get("ESTADO", ""))
+        cabecera = str(row.get("CABECERA", "")).replace("🟡", "").strip().upper()
 
-    st.data_editor(
-        df_estilizado,
-        use_container_width=True,
-        height=420,
-        num_rows="dynamic",
-        disabled=cols_disabled,
-        column_config={
-            "FECHA": st.column_config.TextColumn("FECHA"),
-            "CABECERA": st.column_config.TextColumn("CABECERA"),
-            "HORARIO": st.column_config.TextColumn("HORARIO (RET)"),
-            "PARTIO": st.column_config.TextColumn("PARTIO (HH:MM)"),
-            "DEMORA": st.column_config.NumberColumn(
-                "DEMORA (min)", format="%d min"
-            ),
-            "ESTADO": st.column_config.TextColumn("ESTADO"),
-            "COMENTARIOS": st.column_config.TextColumn("COMENTARIOS"),
-            "MENSAJE WA": st.column_config.TextColumn("📋 MENSAJE WHATSAPP", help="Copiar directamente este texto"),
-            "GUARDADO": st.column_config.TextColumn("GUARDADO"),
-        },
-        key="editor_tabla",
-        on_change=callback_guardar_ediciones,
-    )
+        if estado == "🔴 Demorado":
+            return ["background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"] * len(row)
+        elif cabecera != "RET" and cabecera != "":
+            return ["background-color: rgba(245, 158, 11, 0.22); color: #fde047;"] * len(row)
+        elif estado == "🟢 En Horario":
+            return ["background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"] * len(row)
+
+        return [""] * len(row)
+
+    if not df_sub_filtrado.empty:
+        st.session_state["df_indices_filtrados"] = df_sub_filtrado.index.tolist()
+
+        cols_disabled = ["DEMORA", "ESTADO"]
+
+        df_vista = df_sub_filtrado.copy()
+
+        def agregar_emoji_cabecera(val):
+            str_val = str(val).replace("🟡", "").strip()
+            if str_val.upper() != "RET" and str_val != "":
+                return f"🟡 {str_val}"
+            return str_val
+
+        df_vista["CABECERA"] = df_vista["CABECERA"].apply(agregar_emoji_cabecera)
+        df_vista["MENSAJE WA"] = df_sub_filtrado.apply(armar_mensaje_despacho, axis=1)
+
+        es_guardado_dia = (
+            df_sub_filtrado["GUARDADO"].astype(str).str.upper().eq("SI").all()
+        )
+        if es_guardado_dia:
+            cols_disabled.extend(
+                [
+                    "FECHA",
+                    "CODIGO",
+                    "CABECERA",
+                    "HORARIO",
+                    "ANUNCIO",
+                    "EMPRESA",
+                    "GUARDADO",
+                ]
+            )
+
+        df_estilizado = df_vista.style.apply(aplicar_colores, axis=1)
+
+        def callback_guardar_ediciones():
+            edits = st.session_state.get("editor_tabla", {}).get("edited_rows", {})
+            if edits and "df_indices_filtrados" in st.session_state:
+                indices_filtrados = st.session_state["df_indices_filtrados"]
+                hubo_cambio = False
+
+                df_temp = st.session_state["df_trabajo"].copy()
+
+                for pos_str, cambios in edits.items():
+                    pos_int = int(pos_str)
+                    if pos_int < len(indices_filtrados):
+                        idx_real = indices_filtrados[pos_int]
+                        for campo, val in cambios.items():
+                            if campo != "MENSAJE WA":
+                                val_limpio = str(val).replace("🟡", "").strip()
+                                df_temp.at[idx_real, campo] = val_limpio
+                                hubo_cambio = True
+
+                if hubo_cambio:
+                    df_temp[["DEMORA", "ESTADO"]] = df_temp.apply(
+                        calcular_demora_y_estado, axis=1
+                    )
+                    df_temp = ordenar_por_horario(df_temp)
+                    guardar_todo_en_sheets(df_temp)
+
+        st.data_editor(
+            df_estilizado,
+            use_container_width=True,
+            height=420,
+            num_rows="dynamic",
+            disabled=cols_disabled,
+            column_config={
+                "FECHA": st.column_config.TextColumn("FECHA"),
+                "CABECERA": st.column_config.TextColumn("CABECERA"),
+                "HORARIO": st.column_config.TextColumn("HORARIO (RET)"),
+                "PARTIO": st.column_config.TextColumn("PARTIO (HH:MM)"),
+                "DEMORA": st.column_config.NumberColumn(
+                    "DEMORA (min)", format="%d min"
+                ),
+                "ESTADO": st.column_config.TextColumn("ESTADO"),
+                "COMENTARIOS": st.column_config.TextColumn("COMENTARIOS"),
+                "MENSAJE WA": st.column_config.TextColumn("📋 MENSAJE WHATSAPP", help="Copiar directamente este texto"),
+                "GUARDADO": st.column_config.TextColumn("GUARDADO"),
+            },
+            key="editor_tabla",
+            on_change=callback_guardar_ediciones,
+        )
+
+
+renderizar_tabla_interactiva(df_filtrado)
 
 # ---------------------------------------------------------
 # BOTÓN DE CIERRE DE DÍA
