@@ -5,6 +5,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 # Zona Horaria de Argentina
 TZ_ARG = zoneinfo.ZoneInfo("America/Argentina/Buenos_Aires")
@@ -17,6 +18,37 @@ st.set_page_config(
     page_icon="🚌",
     layout="wide",
     initial_sidebar_state="expanded",
+)
+
+# ---------------------------------------------------------
+# MANTENER POSICIÓN DEL SCROLL TRAS RE-RUN
+# ---------------------------------------------------------
+components.html(
+    """
+    <script>
+    // Guardar la posición del scroll antes de un evento de recarga
+    window.addEventListener('beforeunload', function() {
+        sessionStorage.setItem('scrollPosition', window.parent.scrollY);
+    });
+
+    // Restaurar la posición del scroll al cargar la página
+    window.addEventListener('load', function() {
+        var scrollPosition = sessionStorage.getItem('scrollPosition');
+        if (scrollPosition) {
+            window.parent.scrollTo(0, parseInt(scrollPosition));
+        }
+    });
+
+    // Observador continuo para asegurar el scroll en Streamlit
+    setTimeout(function() {
+        var scrollPosition = sessionStorage.getItem('scrollPosition');
+        if (scrollPosition) {
+            window.parent.scrollTo(0, parseInt(scrollPosition));
+        }
+    }, 300);
+    </script>
+    """,
+    height=0,
 )
 
 SCOPES = [
@@ -241,7 +273,6 @@ if not df_base.empty:
     col_anuncio = col_map.get("se anuncia a", None)
     col_interno = col_map.get("interno", None)
 
-    # Buscar 'Código de transportista' (Columna R - posición 17)
     col_empresa = col_map.get("codigo de transportista", None)
     if not col_empresa and len(df_base.columns) > 17:
         col_empresa = df_base.columns[17]  # Columna R
