@@ -330,6 +330,41 @@ buscar_destino = st.sidebar.text_input(
 )
 
 # ---------------------------------------------------------
+# CONFIGURACIÓN DE COLUMNAS VISIBLES
+# ---------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.subheader("👁️ Columnas Visibles")
+
+columnas_todas = [
+    "FECHA",
+    "CODIGO",
+    "CABECERA",
+    "HORARIO",
+    "ANUNCIO",
+    "EMPRESA",
+    "INTERNO",
+    "PLAT",
+    "PARTIO",
+    "DEMORA",
+    "ESTADO",
+    "COMENTARIOS",
+    "MENSAJE WA",
+    "GUARDADO",
+]
+
+# Por defecto ocultamos FECHA, CODIGO y CABECERA
+columnas_defecto = [
+    c for c in columnas_todas if c not in ["FECHA", "CODIGO", "CABECERA"]
+]
+
+cols_visibles = st.sidebar.multiselect(
+    "Mostrar / Ocultar Columnas",
+    options=columnas_todas,
+    default=columnas_defecto,
+    help="Podés tildar FECHA, CODIGO o CABECERA si querés verlas en la tabla.",
+)
+
+# ---------------------------------------------------------
 # FORMULARIO MANUAL
 # ---------------------------------------------------------
 st.sidebar.markdown("---")
@@ -557,10 +592,10 @@ st.markdown("<br/>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------
-# FRAGMENTO DE TABLA (EVITA RE-RUN COMPLETO Y MANTIENE SCROLL)
+# FRAGMENTO DE TABLA
 # ---------------------------------------------------------
 @st.fragment
-def renderizar_tabla_interactiva(df_sub_filtrado):
+def renderizar_tabla_interactiva(df_sub_filtrado, columnas_a_mostrar):
     col_sub, col_btn = st.columns([3, 1])
     with col_sub:
         st.subheader(f"📡 Despachos del día: {fecha_sel_str}")
@@ -602,6 +637,10 @@ def renderizar_tabla_interactiva(df_sub_filtrado):
 
         df_vista["CABECERA"] = df_vista["CABECERA"].apply(agregar_emoji_cabecera)
         df_vista["MENSAJE WA"] = df_sub_filtrado.apply(armar_mensaje_despacho, axis=1)
+
+        # Filtrar solo las columnas seleccionadas por el usuario
+        cols_finales = [c for c in columnas_a_mostrar if c in df_vista.columns]
+        df_vista = df_vista[cols_finales]
 
         es_guardado_dia = (
             df_sub_filtrado["GUARDADO"].astype(str).str.upper().eq("SI").all()
@@ -651,9 +690,11 @@ def renderizar_tabla_interactiva(df_sub_filtrado):
             use_container_width=True,
             height=420,
             num_rows="dynamic",
+            hide_index=True,
             disabled=cols_disabled,
             column_config={
                 "FECHA": st.column_config.TextColumn("FECHA"),
+                "CODIGO": st.column_config.TextColumn("CÓDIGO"),
                 "CABECERA": st.column_config.TextColumn("CABECERA"),
                 "HORARIO": st.column_config.TextColumn("HORARIO (RET)"),
                 "PARTIO": st.column_config.TextColumn("PARTIO (HH:MM)"),
@@ -662,7 +703,10 @@ def renderizar_tabla_interactiva(df_sub_filtrado):
                 ),
                 "ESTADO": st.column_config.TextColumn("ESTADO"),
                 "COMENTARIOS": st.column_config.TextColumn("COMENTARIOS"),
-                "MENSAJE WA": st.column_config.TextColumn("📋 MENSAJE WHATSAPP", help="Copiar directamente este texto"),
+                "MENSAJE WA": st.column_config.TextColumn(
+                    "📋 MENSAJE WHATSAPP",
+                    help="Copiar directamente este texto",
+                ),
                 "GUARDADO": st.column_config.TextColumn("GUARDADO"),
             },
             key="editor_tabla",
@@ -670,7 +714,7 @@ def renderizar_tabla_interactiva(df_sub_filtrado):
         )
 
 
-renderizar_tabla_interactiva(df_filtrado)
+renderizar_tabla_interactiva(df_filtrado, cols_visibles)
 
 # ---------------------------------------------------------
 # BOTÓN DE CIERRE DE DÍA
