@@ -352,16 +352,16 @@ columnas_todas = [
     "GUARDADO",
 ]
 
-# Por defecto ocultamos FECHA, CODIGO y CABECERA
+# 1️⃣ CAMBIO: Ocultamos solo FECHA y CODIGO, CABECERA queda visible por defecto
 columnas_defecto = [
-    c for c in columnas_todas if c not in ["FECHA", "CODIGO", "CABECERA"]
+    c for c in columnas_todas if c not in ["FECHA", "CODIGO"]
 ]
 
 cols_visibles = st.sidebar.multiselect(
     "Mostrar / Ocultar Columnas",
     options=columnas_todas,
     default=columnas_defecto,
-    help="Podés tildar FECHA, CODIGO o CABECERA si querés verlas en la tabla.",
+    help="Podés tildar FECHA o CODIGO si querés verlas en la tabla.",
 )
 
 # ---------------------------------------------------------
@@ -560,6 +560,10 @@ if df_filtrado.empty:
 # MÉTRICAS
 # ---------------------------------------------------------
 total_reg = len(df_filtrado)
+
+# 3️⃣ CAMBIO: Servicios activos = servicios que aún NO salieron (Pendientes / Sin PARTIO)
+servicios_activos = len(df_filtrado[df_filtrado["ESTADO"] == "⏳ Pendiente"])
+
 en_tiempo = len(df_filtrado[df_filtrado["ESTADO"] == "🟢 En Horario"])
 con_demora = len(df_filtrado[df_filtrado["ESTADO"] == "🔴 Demorado"])
 
@@ -574,7 +578,7 @@ prom_demora_val = (
 )
 
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Registros", f"{total_reg}", f"Fecha: {fecha_sel_str}")
+col1.metric("Servicios Activos", f"{servicios_activos}", f"Total día: {total_reg}")
 col2.metric("🟢 En Horario", f"{en_tiempo}", f"{porc_puntualidad}% puntualidad")
 col3.metric(
     "🔴 Demorados",
@@ -609,16 +613,18 @@ def renderizar_tabla_interactiva(df_sub_filtrado, columnas_a_mostrar):
             mime="text/csv",
         )
 
+    # 2️⃣ CAMBIO: Prioridad de colores ajustada
     def aplicar_colores(row):
         estado = str(row.get("ESTADO", ""))
         cabecera = str(row.get("CABECERA", "")).replace("🟡", "").strip().upper()
 
         if estado == "🔴 Demorado":
             return ["background-color: rgba(239, 68, 68, 0.25); color: #ff9999;"] * len(row)
-        elif cabecera != "RET" and cabecera != "":
-            return ["background-color: rgba(245, 158, 11, 0.22); color: #fde047;"] * len(row)
         elif estado == "🟢 En Horario":
             return ["background-color: rgba(34, 197, 94, 0.2); color: #99ffbb;"] * len(row)
+        elif cabecera != "RET" and cabecera != "":
+            # Si aún no partió (Pendiente) y la cabecera no es RET -> Amarillo
+            return ["background-color: rgba(245, 158, 11, 0.22); color: #fde047;"] * len(row)
 
         return [""] * len(row)
 
@@ -696,8 +702,10 @@ def renderizar_tabla_interactiva(df_sub_filtrado, columnas_a_mostrar):
                 "FECHA": st.column_config.TextColumn("FECHA"),
                 "CODIGO": st.column_config.TextColumn("CÓDIGO"),
                 "CABECERA": st.column_config.TextColumn("CABECERA"),
-                "HORARIO": st.column_config.TextColumn("HORARIO (RET)"),
-                "PARTIO": st.column_config.TextColumn("PARTIO (HH:MM)"),
+                "HORARIO": st.column_config.TextColumn("HORARIO"),
+                "EMPRESA": st.column_config.TextColumn("EMP"),
+                "PLAT": st.column_config.TextColumn("P"),
+                "PARTIO": st.column_config.TextColumn("PARTIO"),
                 "DEMORA": st.column_config.NumberColumn(
                     "DEMORA (min)", format="%d min"
                 ),
